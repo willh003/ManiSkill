@@ -44,3 +44,6 @@ imgui.ini
 # testing
 .coverage*
 htmlcov/
+
+# local experiment outputs (runs, checkpoints, renders, slurm logs): never commit
+logs/

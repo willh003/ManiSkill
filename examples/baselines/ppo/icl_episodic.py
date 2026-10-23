@@ -39,7 +39,7 @@ from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
 from ppo import Agent
-from run_logging import RunDir
+from run_logging import LOG_ROOT, RunDir
 
 # observation layout of PushTGoal-v1 (33 dims): qpos 0:7, qvel 7:14, tcp pose 14:21, goal pos 21:24, goal cos/sin 24:26, T pose 26:33
 GOAL_SLICE = slice(21, 26)
@@ -51,7 +51,7 @@ class Args:
     expert_checkpoint: str = "runs/pusht-goal-ppo/final_ckpt.pt"
     exp_name: str = "icl"
     out_dir: str = ""
-    """default: runs/icl-<exp_name> (layout: see run_logging.py)"""
+    """default: <repo>/logs/runs/icl-<exp_name> (layout: see run_logging.py)"""
     env_id: str = "PushTGoal-v1"
     num_envs: int = 512
     """tasks (goals) per iteration and per evaluation; each is rolled out for k student episodes"""
@@ -272,7 +272,7 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
 def main():
     args = tyro.cli(Args)
     device = torch.device("cuda")
-    run = RunDir(args.out_dir or f"runs/icl-{args.exp_name}", args)
+    run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
     torch.manual_seed(args.seed)
 
     env = gym.make(args.env_id, num_envs=args.num_envs, obs_mode="state", control_mode="pd_joint_delta_pos", sim_backend="physx_cuda")

@@ -68,8 +68,9 @@ class Args:
     """the number of steps to run in each evaluation environment during evaluation"""
     reconfiguration_freq: Optional[int] = None
     """how often to reconfigure the environment during training"""
-    eval_reconfiguration_freq: Optional[int] = 1
-    """for benchmarking purposes we want to reconfigure the eval environment each reset to ensure objects are randomized in some tasks"""
+    eval_reconfiguration_freq: Optional[int] = None
+    """for benchmarking purposes we want to reconfigure the eval environment each reset to ensure objects are randomized in some tasks.
+    None means 1 (every reset) unless eval_partial_reset is set, since partial resets cannot reconfigure"""
     control_mode: Optional[str] = "pd_joint_delta_pos"
     """the control mode to use for the environment"""
     anneal_lr: bool = False
@@ -197,7 +198,10 @@ if __name__ == "__main__":
     if args.control_mode is not None:
         env_kwargs["control_mode"] = args.control_mode
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
-    eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, **env_kwargs)
+    eval_reconfiguration_freq = args.eval_reconfiguration_freq
+    if eval_reconfiguration_freq is None and not args.eval_partial_reset:
+        eval_reconfiguration_freq = 1
+    eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=eval_reconfiguration_freq, **env_kwargs)
     if isinstance(envs.action_space, gym.spaces.Dict):
         envs = FlattenActionSpaceWrapper(envs)
         eval_envs = FlattenActionSpaceWrapper(eval_envs)

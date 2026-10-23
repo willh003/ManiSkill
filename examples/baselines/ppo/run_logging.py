@@ -15,6 +15,9 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+LOG_ROOT = Path(__file__).resolve().parents[3] / "logs"  # gitignored: runs/, renders/, slurm/
 
 
 class _Tee:
