@@ -60,7 +60,11 @@ class Args:
     """student episodes per task, i.e. context lengths h = 0..k"""
     num_iterations: int = 20
     feedback: str = "final_error"
-    """final_error: [dx, dy, cos dyaw, sin dyaw] of the final T vs the goal; success: the 0/1 success flag"""
+    """final_error: [dx, dy, cos dyaw, sin dyaw] of the final T vs the goal; iou: scalar overlap of the final T with the goal
+    (0..1); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
+    at the steps where the student's action differed most from the expert's"""
+    n_hints: int = 5
+    """number of hint steps per episode (--feedback hints)"""
     d_model: int = 128
     n_heads: int = 4
     n_ctx_layers: int = 2
@@ -83,6 +87,10 @@ def student_obs(obs):
 
 def yaw_of_quat(q):
     return 2 * torch.atan2(q[..., 3], q[..., 0])
+
+
+def feedback_dim(args):
+    return {"final_error": Y_DIM, "iou": 1, "success": 1, "hints": 1}[args.feedback]
 
 
 def feedback_from_obs(obs, kind, success=None):
@@ -108,7 +116,8 @@ class ICLPolicy(nn.Module):
         self.y_in = nn.Linear(y_dim, d)
         self.ep_emb = nn.Embedding(args.k, d)
         self.pos_emb = nn.Embedding(args.num_steps // args.ctx_stride + 1, d)
-        self.type_emb = nn.Embedding(3, d)  # 0 null, 1 step, 2 feedback
+        self.type_emb = nn.Embedding(4, d)  # 0 null, 1 step, 2 feedback, 3 hint
+        self.hint_in = nn.Linear(s_dim + a_dim, d)
         self.null = nn.Parameter(torch.zeros(1, 1, d))
         self.ctx_enc = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d, H, 4 * d, dropout=0.0, batch_first=True, norm_first=True), args.n_ctx_layers, enable_nested_tensor=False
@@ -129,9 +138,10 @@ class ICLPolicy(nn.Module):
         self.y_mean.copy_(y.mean(0))
         self.y_std.copy_(y.std(0).clamp_min(1e-3))
 
-    def encode_context(self, ctx_steps, ctx_y, n_eps, ctx_valid):
+    def encode_context(self, ctx_steps, ctx_y, n_eps, ctx_valid, hints, hint_valid):
         """ctx_steps (B, k, Tc, S+A) raw, ctx_y (B, k, Y), n_eps (B,) number of valid past episodes,
-        ctx_valid (B, k, Tc) False for steps after the episode terminated.
+        ctx_valid (B, k, Tc) False for steps after the episode terminated, hints (B, k, m, S+A) raw (state, expert action)
+        pairs and hint_valid (B, k, m) (m = 0 when there are no hints).
         Returns memory (B, 1 + k*(Tc+1), d) and a key padding mask (True = ignore)."""
         B, k, Tc, _ = ctx_steps.shape
         dev = ctx_steps.device
@@ -141,9 +151,12 @@ class ICLPolicy(nn.Module):
         pos = self.pos_emb(torch.arange(Tc, device=dev))[None, None]  # (1,1,Tc,d)
         step_tok = self.step_in(x) + ep + pos + self.type_emb.weight[1]
         y_tok = self.y_in((ctx_y - self.y_mean) / self.y_std)[:, :, None] + ep + self.type_emb.weight[2]
-        tokens = torch.cat([step_tok, y_tok], dim=2).reshape(B, k * (Tc + 1), -1)
+        h = torch.cat([(hints[..., : self.s_mean.shape[0]] - self.s_mean) / self.s_std, hints[..., self.s_mean.shape[0] :]], dim=-1)
+        hint_tok = self.hint_in(h) + ep + self.type_emb.weight[3]
+        m = hints.shape[2]
+        tokens = torch.cat([step_tok, y_tok, hint_tok], dim=2).reshape(B, k * (Tc + 1 + m), -1)
         ep_valid = (torch.arange(k, device=dev)[None] < n_eps[:, None])[:, :, None]  # (B,k,1)
-        valid = torch.cat([ctx_valid & ep_valid, ep_valid], dim=2).reshape(B, -1)
+        valid = torch.cat([ctx_valid & ep_valid, ep_valid, hint_valid & ep_valid], dim=2).reshape(B, -1)
         null = self.null.expand(B, 1, -1) + self.type_emb.weight[0]
         tokens = torch.cat([null, tokens], dim=1)
         pad = torch.cat([torch.zeros(B, 1, dtype=torch.bool, device=dev), ~valid], dim=1)
@@ -183,18 +196,21 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
         prior_goal[:, 3] = torch.cos(torch.tensor(base.goal_z_rot, device=device))
         prior_goal[:, 4] = torch.sin(torch.tensor(base.goal_z_rot, device=device))
     if mode == "student":
-        n, cy = ctx["n"], ctx["y"]
-        if ctx_mode == "shuf_y":
-            cy = cy[torch.randperm(N, device=device)]
-        elif ctx_mode == "no_y":
-            cy = torch.zeros_like(cy)
+        n, cy, ch, chv = ctx["n"], ctx["y"], ctx["hints"], ctx["hint_valid"]
+        if ctx_mode == "shuf_y":  # feedback (and hints) of another task
+            perm = torch.randperm(N, device=device)
+            cy, ch, chv = cy[perm], ch[perm], chv[perm]
+        elif ctx_mode == "no_y":  # keep the student's own episodes, drop all feedback
+            cy, chv = torch.zeros_like(cy), torch.zeros_like(chv)
         elif ctx_mode == "no_ctx":
             n = torch.zeros_like(n)
         with torch.no_grad():
-            memory, pad = policy.encode_context(ctx["steps"], cy, n, ctx["valid"])
+            memory, pad = policy.encode_context(ctx["steps"], cy, n, ctx["valid"], ch, chv)
     xs, acts, labels, alive = [], [], [], []
     succ_once = torch.zeros(N, dtype=torch.bool, device=device)  # also "done": the episode terminates at the first success
     y_obs = None  # observation at the termination step (the last step if it never succeeds)
+    iou = None  # overlap at the termination step; the env auto-resets on the last step, so there it reuses the previous value
+    base = venv.unwrapped
     for t in range(T):
         with torch.no_grad():
             a_lab = expert.get_action(obs, deterministic=True)
@@ -216,22 +232,40 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
         final = infos["final_observation"] if "final_observation" in infos else obs
         s = (infos["final_info"] if "final_info" in infos else infos)["success"].bool()
         y_obs = final if y_obs is None else torch.where(succ_once[:, None], y_obs, final)  # frozen once done
+        if args.feedback == "iou":
+            cur = base.pseudo_render_intersection() if t < T - 1 else (torch.maximum(iou, torch.full_like(iou, 0.9)) * s + iou * ~s)
+            iou = cur if iou is None else torch.where(succ_once, iou, cur)
         succ_once |= s
-    y = feedback_from_obs(y_obs, args.feedback, succ_once)
     err = feedback_from_obs(y_obs, "final_error")
     alive = torch.stack(alive, 1)
+    xs_t, acts_t, labels_t = torch.stack(xs, 1), torch.stack(acts, 1), torch.stack(labels, 1)
+    m = args.n_hints if args.feedback == "hints" else 0
+    if args.feedback == "iou":
+        y = iou[:, None]
+    elif args.feedback == "hints":
+        y = torch.zeros(N, 1, device=device)  # constant token: no outcome feedback
+    else:
+        y = feedback_from_obs(y_obs, args.feedback, succ_once)
+    # sparse hints: the m alive steps where the executed action was farthest from the expert's, as (state, expert action)
+    disc = ((acts_t - labels_t) ** 2).sum(-1).masked_fill(~alive, -1.0)
+    top = disc.topk(m, dim=1).indices if m else torch.zeros(N, 0, dtype=torch.long, device=device)
+    hint = torch.cat([xs_t.gather(1, top[..., None].expand(-1, -1, xs_t.shape[-1])),
+                      labels_t.gather(1, top[..., None].expand(-1, -1, labels_t.shape[-1]))], dim=-1)
+    hint_valid = disc.gather(1, top) >= 0
     return dict(
-        obs=torch.stack(xs, 1), act=torch.stack(acts, 1), lab=torch.stack(labels, 1), y=y, alive=alive,
+        obs=xs_t, act=acts_t, lab=labels_t, y=y, alive=alive, hint=hint, hint_valid=hint_valid,
         success_once=succ_once, ep_len=alive.sum(1).float(),
         pos_err=err[:, :2].norm(dim=1), yaw_err=torch.atan2(err[:, 3], err[:, 2]).abs(),
     )
 
 
 def new_ctx(args, N, S, A, y_dim, device):
+    m = args.n_hints if args.feedback == "hints" else 0
     Tc = len(range(args.ctx_stride - 1, args.num_steps, args.ctx_stride)) + (0 if (args.num_steps % args.ctx_stride == 0) else 1)
     return dict(
         steps=torch.zeros(N, args.k, Tc, S + A, device=device), y=torch.zeros(N, args.k, y_dim, device=device),
         valid=torch.zeros(N, args.k, Tc, dtype=torch.bool, device=device),
+        hints=torch.zeros(N, args.k, m, S + A, device=device), hint_valid=torch.zeros(N, args.k, m, dtype=torch.bool, device=device),
         n=torch.zeros(N, dtype=torch.long, device=device),
     )
 
@@ -241,6 +275,8 @@ def add_to_ctx(ctx, ep, args):
     idx = ctx_step_index(ep["obs"].shape[1], args.ctx_stride, ep["obs"].device)
     ctx["steps"][:, i] = torch.cat([ep["obs"][:, idx], ep["act"][:, idx]], dim=-1)
     ctx["valid"][:, i] = ep["alive"][:, idx]
+    ctx["hints"][:, i] = ep["hint"]
+    ctx["hint_valid"][:, i] = ep["hint_valid"]
     ctx["y"][:, i] = ep["y"]
     ctx["n"] += 1
 
@@ -250,7 +286,7 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
     device = venv.device
     S = student_obs(torch.zeros(1, venv.single_observation_space.shape[0])).shape[-1]
     A = venv.single_action_space.shape[0]
-    y_dim = Y_DIM if args.feedback == "final_error" else 1
+    y_dim = feedback_dim(args)
     ctx = new_ctx(args, args.num_envs, S, A, y_dim, device)
     eps = []
     for e in range(args.k + (1 if student_mode == "eval" else 0)):
@@ -286,7 +322,7 @@ def main():
     expert = Agent(venv).to(device)
     expert.load_state_dict(torch.load(args.expert_checkpoint, map_location=device))
     expert.eval()
-    s_dim, y_dim = obs_dim - 5, (Y_DIM if args.feedback == "final_error" else 1)
+    s_dim, y_dim = obs_dim - 5, feedback_dim(args)
     policy = ICLPolicy(s_dim, act_dim, y_dim, args).to(device)
     opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.num_iterations * args.grad_steps, eta_min=args.lr * 0.02)
@@ -313,7 +349,7 @@ def main():
         print(f"reference {name:20s} {refs[name]}", flush=True)
 
     # aggregated dataset, per task: query episodes (k student + 1 expert), their expert labels, and the context available at each
-    D = dict(q_obs=[], q_lab=[], q_alive=[], ctx_steps=[], ctx_y=[], ctx_valid=[])
+    D = dict(q_obs=[], q_lab=[], q_alive=[], ctx_steps=[], ctx_y=[], ctx_valid=[], ctx_hints=[], ctx_hint_valid=[])
     log = []
     gen_seed = args.seed * 1000
     for it in range(args.num_iterations):
@@ -329,8 +365,11 @@ def main():
         D["ctx_steps"].append(ctx["steps"])
         D["ctx_y"].append(ctx["y"])
         D["ctx_valid"].append(ctx["valid"])
+        D["ctx_hints"].append(ctx["hints"])
+        D["ctx_hint_valid"].append(ctx["hint_valid"])
         Q, L, QA = torch.cat(D["q_obs"]), torch.cat(D["q_lab"]), torch.cat(D["q_alive"])
         CS, CY, CV = torch.cat(D["ctx_steps"]), torch.cat(D["ctx_y"]), torch.cat(D["ctx_valid"])
+        CH, CHV = torch.cat(D["ctx_hints"]), torch.cat(D["ctx_hint_valid"])
         if it == 0:
             policy.set_norm(Q.flatten(0, 1), CY.flatten(0, 1))
         M = Q.shape[0]
@@ -341,7 +380,7 @@ def main():
             if not args.relabel_student:
                 j = torch.full_like(j, args.k)
             h = torch.where(j == args.k, torch.randint(0, args.k + 1, (args.batch_size,), device=device), j)
-            memory, pad = policy.encode_context(CS[idx], CY[idx], h, CV[idx])
+            memory, pad = policy.encode_context(CS[idx], CY[idx], h, CV[idx], CH[idx], CHV[idx])
             pred = policy.decode(Q[idx, j], memory, pad)
             m = QA[idx, j].float()  # only steps before the episode terminated
             loss = (((pred - L[idx, j]) ** 2).mean(-1) * m).sum() / m.sum().clamp_min(1.0)
