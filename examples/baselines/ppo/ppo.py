@@ -59,8 +59,9 @@ class Args:
     """the number of parallel evaluation environments"""
     partial_reset: bool = True
     """whether to let parallel environments reset upon termination instead of truncation"""
-    eval_partial_reset: bool = False
-    """whether to let parallel evaluation environments reset upon termination instead of truncation"""
+    eval_partial_reset: bool = True
+    """whether to let parallel evaluation environments reset upon termination instead of truncation. Defaults to True so
+    evaluation ends episodes the same way training does (e.g. at success); only each env's first episode is counted"""
     num_steps: int = 50
     """the number of steps to run in each environment per policy rollout"""
     num_eval_steps: int = 50
@@ -278,17 +279,19 @@ if __name__ == "__main__":
             eval_obs, _ = eval_envs.reset()
             eval_metrics = defaultdict(list)
             num_episodes = 0
+            eval_counted = torch.zeros(args.num_eval_envs, dtype=torch.bool, device=device)  # envs whose first episode is recorded
             for _ in range(args.num_eval_steps):
                 with torch.no_grad():
                     eval_obs, eval_rew, eval_terminations, eval_truncations, eval_infos = eval_envs.step(agent.get_action(eval_obs, deterministic=True))
                     if "final_info" in eval_infos:
-                        mask = eval_infos["_final_info"]
+                        mask = eval_infos["_final_info"] & ~eval_counted
+                        eval_counted |= mask
                         num_episodes += mask.sum()
                         for k, v in eval_infos["final_info"]["episode"].items():
-                            eval_metrics[k].append(v)
+                            eval_metrics[k].append(v[mask])
             print(f"Evaluated {args.num_eval_steps * args.num_eval_envs} steps resulting in {num_episodes} episodes")
             for k, v in eval_metrics.items():
-                mean = torch.stack(v).float().mean()
+                mean = torch.cat(v).float().mean()
                 if logger is not None:
                     logger.add_scalar(f"eval/{k}", mean, global_step)
                 print(f"eval_{k}_mean={mean}")
