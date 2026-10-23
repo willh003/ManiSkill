@@ -10,3 +10,4 @@
 - stdout of `ppo.py` is block-buffered under Slurm; read progress from the TensorBoard events (`EventAccumulator`) or use `python -u`.
 - Git: `origin` is the user's fork over SSH, `main` tracks `upstream`; `remote.pushDefault=origin`. The GitHub key `~/.ssh/willh003`
   has a passphrase (needs `ssh-add` in the session).
+- Local-driven sync/submit/pull scripts: see `remote-workflow.md` (porting to another repo: `remote-workflow-setup.md`).

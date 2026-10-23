@@ -23,3 +23,5 @@ You will either be running from within hyak klone, a large shared compute cluste
 - If you are local, you can do quick python tests and do small/quick runs locally. You should submit larger experiments or parallel runs to hyak klone by syncing the code there, then submitting jobs from there, then syncing results back here
 - If you are on the cluster you can run on l40 gpus (preferably) or l40s/a40 gpus. You should start by using the partition group weirdlab, then use ckpt. Info is provided in docs/claude/info/cluster-and-logging.md
 
+
+To run on klone from the local machine (push, sbatch, status, pull), see docs/claude/info/remote-workflow.md (scripts/cluster/).
