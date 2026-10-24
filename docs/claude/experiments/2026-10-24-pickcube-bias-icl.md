@@ -72,3 +72,13 @@ current-state query still sees the full obs). Success-flag feedback, `logs/runs/
 full context (0.71-0.75 at h=1 vs 0.71), and hiding the grasp flag as well changes nothing. The bias is inferred from the gripper trajectory
 relative to the observed cube (e.g. where the gripper goes / stops, and how the observed cube moves on contact). Not tested: which part of
 that trajectory matters (final positions only, contact events).
+
+### Is the inference real? (diagnostics on `icl-pick-success-v2`, run locally with scratch scripts)
+- Split of h=1 success by what happened in episode 0: cube lifted >=3 steps 0.86 (n=546); never lifted 0.63 (n=990); failed without a lift
+  0.62 (n=954). No-context level is ~0.28, so carrying the cube (observed cube moves with the gripper at a fixed offset) is the strongest
+  cue but not the only one.
+- Counterfactual shift: add d to the cube x entries of the *context only* (as if the past episode's offset were o+d). h=1 success:
+  d=-4/-2/0/+2/+4 cm -> 0.20/0.52/0.71/0.41/0.12; among episodes that still grasp, the grasp x relative to the true cube moves opposite to d
+  (+0.8 / +0.6 / -0.2 / -1.1 / -1.3 cm). So the student causally uses the context's gripper-vs-observed-cube relation to estimate the offset
+  (the effect is smaller than d and counted only on survivors). Not luck: 512-1000 tasks per cell, controls consistent across runs.
+- Open: which events beyond a carry give information when nothing was lifted (pushing / near misses).
