@@ -63,6 +63,9 @@ class PushTTask:
     def expert_obs(self, obs):
         return obs
 
+    def kin_idx(self):
+        raise NotImplementedError("--ctx-features kin is only defined for PickCubeBias-v1")
+
     def prior_obs(self, obs, base):
         """Obs for an expert that is told the default goal."""
         o = obs.clone()
@@ -110,6 +113,10 @@ class PickBiasTask:
     def expert_obs(self, obs):
         return obs[..., :42]
 
+    def kin_idx(self):
+        """Student-obs positions of tcp pose (19:26) and the observed cube xyz (29:32)."""
+        return [self.keep.index(i) for i in list(range(19, 26)) + [29, 30, 31]]
+
     def prior_obs(self, obs, base):
         """An expert that assumes there is no bias acts on the biased observation."""
         from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
@@ -142,6 +149,9 @@ class Args:
     num_iterations: int = 20
     hide_grasp: str = "none"
     """PickCubeBias only: none | flag (drop is_grasped from the student obs) | fingers (also drop the finger joint qpos/qvel)"""
+    ctx_features: str = "all"
+    """features of the context (past-episode) steps: all | kin (PickCubeBias only: tcp pose + observed cube xyz, no joints/velocities/actions).
+    The current-state query always sees the full obs."""
     feedback: str = "final_error"
     """final_error: [dx, dy, cos dyaw, sin dyaw] of the final T vs the goal; iou: scalar overlap of the final T with the goal
     (0..1); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
@@ -193,6 +203,11 @@ class ICLPolicy(nn.Module):
         self.register_buffer("y_mean", torch.zeros(y_dim))
         self.register_buffer("y_std", torch.ones(y_dim))
         self.step_in = nn.Linear(s_dim + a_dim, d)
+        ctx_mask = torch.ones(s_dim + a_dim)
+        if args.ctx_features == "kin":
+            ctx_mask.zero_()
+            ctx_mask[TASK.kin_idx()] = 1.0
+        self.register_buffer("ctx_mask", ctx_mask, persistent=False)  # zeroes the context step features that are not used
         self.y_in = nn.Linear(y_dim, d)
         self.ep_emb = nn.Embedding(args.k, d)
         self.pos_emb = nn.Embedding(args.num_steps // args.ctx_stride + 1, d)
@@ -226,7 +241,7 @@ class ICLPolicy(nn.Module):
         B, k, Tc, _ = ctx_steps.shape
         dev = ctx_steps.device
         s = (ctx_steps[..., : self.s_mean.shape[0]] - self.s_mean) / self.s_std
-        x = torch.cat([s, ctx_steps[..., self.s_mean.shape[0] :]], dim=-1)
+        x = torch.cat([s, ctx_steps[..., self.s_mean.shape[0] :]], dim=-1) * self.ctx_mask
         ep = self.ep_emb(torch.arange(k, device=dev))[None, :, None]  # (1,k,1,d)
         pos = self.pos_emb(torch.arange(Tc, device=dev))[None, None]  # (1,1,Tc,d)
         step_tok = self.step_in(x) + ep + pos + self.type_emb.weight[1]

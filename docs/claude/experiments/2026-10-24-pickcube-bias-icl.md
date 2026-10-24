@@ -61,3 +61,14 @@ Retrain with the grasp signal hidden from the student's obs (`--hide-grasp`, suc
 No-context control stays ~0.25-0.30. **Hiding the grasp barely changes learning**, so the student is not mainly using the grasp event
 (or the finger width). It still needs the context trajectories. Remaining candidates: tcp vs observed-cube relation during contact/pushing,
 controller tracking error (qpos/qvel/actions). Next test: restrict the context to tcp pose + observed cube only.
+
+Context restricted to tcp pose + observed cube xyz (`--ctx-features kin`: no joints, velocities or actions in the past-episode steps; the
+current-state query still sees the full obs). Success-flag feedback, `logs/runs/icl-pick-success-kin{none,flag}` (flag = is_grasped also hidden):
+| context / hidden | h=0 | h=1 | h=2 | h=3 | h=4 | no-feedback h=1 | no-ctx h=1 |
+|---|---|---|---|---|---|---|---|
+| kin context | 0.30 | 0.71 | 0.85 | 0.89 | 0.86 | 0.69 | 0.29 |
+| kin context, is_grasped hidden | 0.31 | 0.75 | 0.85 | 0.88 | 0.89 | 0.70 | 0.30 |
+**Controller error is not needed**: with only gripper pose and observed cube position in the context the student learns as well as with the
+full context (0.71-0.75 at h=1 vs 0.71), and hiding the grasp flag as well changes nothing. The bias is inferred from the gripper trajectory
+relative to the observed cube (e.g. where the gripper goes / stops, and how the observed cube moves on contact). Not tested: which part of
+that trajectory matters (final positions only, contact events).
