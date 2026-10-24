@@ -397,7 +397,7 @@ def main():
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.num_iterations * args.grad_steps, eta_min=args.lr * 0.02)
 
     with torch.random.fork_rng():
-        torch.manual_seed(args.eval_seed)
+        torch.manual_seed(args.eval_seed + 1000)  # not an env reset seed: sharing one would correlate goals with the initial states
         eval_goals = TASK.sample(base, args.num_envs)
 
     def evaluate(ctx_mode="normal"):
