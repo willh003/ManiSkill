@@ -29,3 +29,9 @@ Controls (shuffled / no feedback / no context) are 0.02-0.06 at every h for both
 - **Scalar IoU never learns**: flat at 3-7% for all h through 30 iterations, indistinguishable from controls, although loss
   falls (0.028 -> 0.024). A single overlap value is ambiguous about the direction and rotation of the error.
 - Not tested: IoU with larger k / longer training / bigger context; intermediate signals (coarse direction, IoU + success).
+
+## Rerun after the eval-seed fix (2026-10-24)
+Eval goals are now sampled under `eval_seed + 1000` (see `2026-10-24-pickcube-bias-icl.md`). Reruns, 30 iterations
+(`logs/runs/icl-fb-{final_error,hints,iou}-v2`), success_once at h=0 / 1 / 4:
+true pose error 0.05 / 0.93 / 0.97, hints 0.05 / 0.91 / 0.94, IoU 0.05 / 0.06 / 0.05. Same picture as above, controls at chance (<=0.06),
+so no sign of the leak on PushT.

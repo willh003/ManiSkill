@@ -89,6 +89,11 @@ class PickBiasTask:
 
     obs_dim, y_dim = 45, 3
 
+    def __init__(self, hide_grasp="none"):
+        # dims removed from the student's obs: the is_grasped flag (18), plus the finger joints that also reveal a grasp (qpos 7:9, qvel 16:18)
+        drop = {"none": [], "flag": [18], "fingers": [7, 8, 16, 17, 18]}[hide_grasp]
+        self.keep = [i for i in range(42) if i not in drop]
+
     def sample(self, base, n):
         o = torch.zeros(n, 3, device=base.device)
         o[:, :2] = (torch.rand(n, 2, device=base.device) * 2 - 1) * base.bias_range
@@ -100,14 +105,16 @@ class PickBiasTask:
     def student_obs(self, obs):
         from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
 
-        return observed_cube_obs(obs)
+        return observed_cube_obs(obs)[..., self.keep]
 
     def expert_obs(self, obs):
         return obs[..., :42]
 
     def prior_obs(self, obs, base):
         """An expert that assumes there is no bias acts on the biased observation."""
-        return self.student_obs(obs)
+        from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
+
+        return observed_cube_obs(obs)
 
     def final_error(self, obs):
         return obs[:, 36:39]
@@ -133,6 +140,8 @@ class Args:
     k: int = 4
     """student episodes per task, i.e. context lengths h = 0..k"""
     num_iterations: int = 20
+    hide_grasp: str = "none"
+    """PickCubeBias only: none | flag (drop is_grasped from the student obs) | fingers (also drop the finger joint qpos/qvel)"""
     feedback: str = "final_error"
     """final_error: [dx, dy, cos dyaw, sin dyaw] of the final T vs the goal; iou: scalar overlap of the final T with the goal
     (0..1); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
@@ -371,7 +380,7 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
 def main():
     args = tyro.cli(Args)
     global TASK
-    TASK = TASKS[args.env_id]()
+    TASK = TASKS[args.env_id](**(dict(hide_grasp=args.hide_grasp) if args.env_id == "PickCubeBias-v1" else {}))
     device = torch.device("cuda")
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
     torch.manual_seed(args.seed)

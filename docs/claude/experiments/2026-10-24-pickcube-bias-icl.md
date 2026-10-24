@@ -45,3 +45,19 @@ drew from the same random stream and the offset was exactly 0.5 x the cube xy (c
 (`icl_episodic.py`): sample eval goals under `eval_seed + 1000`. Training was not affected (goals come from the global RNG,
 not under a reset seed). Not re-run: PushT (h=0 was at chance there, so no sign of the leak); the "expert told default" reference
 (0.14) in the first runs used the leaking seed and should be re-read from the v2 `results.json`.
+
+## Why does the success flag help? (follow-up)
+Eval-time zeroing of context features (success-flag student, h=1 / h=4; normal 0.71 / 0.86): observed cube entries 0.17 / 0.21,
+qpos+qvel 0.49 / 0.62, tcp pose 0.59 / 0.75, actions 0.64 / 0.79, is_grasped 0.69 / 0.79, success flag 0.72 / 0.85. (OOD zeroing, so
+read as "which features matter".) At the first grasped step, observed-cube minus tcp recovers the offset (R2 0.69, 1.7 cm) in the
+53% of no-context episodes that grasp; the contact-based estimate (first step the observed cube moves) has R2 0.35.
+
+Retrain with the grasp signal hidden from the student's obs (`--hide-grasp`, success-flag feedback, `logs/runs/icl-pick-success-hide{flag,fingers}`):
+| hidden | h=0 | h=1 | h=2 | h=3 | h=4 | no-feedback control h=1 |
+|---|---|---|---|---|---|---|
+| nothing (v2) | 0.29 | 0.71 | 0.82 | 0.81 | 0.82 | 0.70 |
+| is_grasped flag | 0.27 | 0.70 | 0.80 | 0.83 | 0.82 | 0.65 |
+| flag + finger qpos/qvel | 0.27 | 0.63 | 0.73 | 0.75 | 0.78 | 0.62 |
+No-context control stays ~0.25-0.30. **Hiding the grasp barely changes learning**, so the student is not mainly using the grasp event
+(or the finger width). It still needs the context trajectories. Remaining candidates: tcp vs observed-cube relation during contact/pushing,
+controller tracking error (qpos/qvel/actions). Next test: restrict the context to tcp pose + observed cube only.
