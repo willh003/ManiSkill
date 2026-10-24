@@ -82,3 +82,15 @@ that trajectory matters (final positions only, contact events).
   (+0.8 / +0.6 / -0.2 / -1.1 / -1.3 cm). So the student causally uses the context's gripper-vs-observed-cube relation to estimate the offset
   (the effect is smaller than d and counted only on survivors). Not luck: 512-1000 tasks per cell, controls consistent across runs.
 - Open: which events beyond a carry give information when nothing was lifted (pushing / near misses).
+- Which previous-episode events carry information (`icl-pick-success-v2`, 2048 tasks, h=1 success by what episode 0 did; "pushed" = observed cube
+  moved >1 cm, "lifted" = >=3 steps >1 cm above the table):
+  | episode 0 | n | h=1 success | mean offset |
+  |---|---|---|---|
+  | lifted | 708 | 0.87 | 3.2 cm |
+  | not lifted, cube pushed | 1234 | 0.65 | 4.1 cm |
+  | not lifted, cube untouched | 106 | 0.32 | 4.9 cm |
+  Controlling for |offset| (0-3 / 3-5 / 5-8 cm): lifted 0.86/0.89/0.84, pushed 0.64/0.68/0.58, untouched 0.75 (n=4)/0.29/0.32. Untouched is at the no-context
+  level (0.28) whatever the closest approach (n too small to resolve it). So: **contact is what carries information** - a carry gives the most, a push still
+  gives a lot, a miss gives nothing. Correlational (the shift test above is the causal one). 95% of episodes push the cube, which is why the success
+  flag's gain does not depend on the flag: the information is in the contact geometry (gripper position when the observed cube starts to move,
+  and how it moves).
