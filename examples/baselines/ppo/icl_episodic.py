@@ -46,6 +46,80 @@ GOAL_SLICE = slice(21, 26)
 Y_DIM = 4
 
 
+class PushTTask:
+    """Hidden goal T pose. The student sees the clean obs without the goal entries."""
+
+    obs_dim, y_dim = 33, 4
+
+    def sample(self, base, n):
+        return base.sample_goal_delta(n)
+
+    def reset_options(self, tasks):
+        return dict(goal=tasks)
+
+    def student_obs(self, obs):
+        return torch.cat([obs[..., : GOAL_SLICE.start], obs[..., GOAL_SLICE.stop :]], dim=-1)
+
+    def expert_obs(self, obs):
+        return obs
+
+    def prior_obs(self, obs, base):
+        """Obs for an expert that is told the default goal."""
+        o = obs.clone()
+        o[:, GOAL_SLICE.start : GOAL_SLICE.start + 2] = torch.tensor(base.goal_offset.tolist(), device=obs.device)
+        o[:, 23] = 1e-3
+        o[:, 24] = torch.cos(torch.tensor(base.goal_z_rot, device=obs.device))
+        o[:, 25] = torch.sin(torch.tensor(base.goal_z_rot, device=obs.device))
+        return o
+
+    def final_error(self, obs):
+        """Final T pose relative to the goal, [dx, dy, cos dyaw, sin dyaw]."""
+        dxy = obs[:, 26:28] - obs[:, 21:23]
+        goal_yaw = torch.atan2(obs[:, 25], obs[:, 24])
+        dyaw = yaw_of_quat(obs[:, 29:33]) - goal_yaw
+        return torch.cat([dxy, dyaw.cos()[:, None], dyaw.sin()[:, None]], dim=1)
+
+    def metrics(self, err):
+        return err[:, :2].norm(dim=1), torch.atan2(err[:, 3], err[:, 2]).abs()
+
+
+class PickBiasTask:
+    """Hidden xy bias between the observed and the true cube position (PickCubeBias-v1). The student sees the biased cube
+    entries; the expert sees the clean obs. The feedback is the true tcp -> cube vector at the end of the episode."""
+
+    obs_dim, y_dim = 45, 3
+
+    def sample(self, base, n):
+        o = torch.zeros(n, 3, device=base.device)
+        o[:, :2] = (torch.rand(n, 2, device=base.device) * 2 - 1) * base.bias_range
+        return o
+
+    def reset_options(self, tasks):
+        return dict(offset=tasks)
+
+    def student_obs(self, obs):
+        from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
+
+        return observed_cube_obs(obs)
+
+    def expert_obs(self, obs):
+        return obs[..., :42]
+
+    def prior_obs(self, obs, base):
+        """An expert that assumes there is no bias acts on the biased observation."""
+        return self.student_obs(obs)
+
+    def final_error(self, obs):
+        return obs[:, 36:39]
+
+    def metrics(self, err):
+        return err[:, :2].norm(dim=1), torch.zeros(len(err), device=err.device)
+
+
+TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask}
+TASK = PushTTask()
+
+
 @dataclass
 class Args:
     expert_checkpoint: str = "runs/pusht-goal-ppo/final_ckpt.pt"
@@ -82,7 +156,7 @@ class Args:
 
 
 def student_obs(obs):
-    return torch.cat([obs[..., : GOAL_SLICE.start], obs[..., GOAL_SLICE.stop :]], dim=-1)
+    return TASK.student_obs(obs)
 
 
 def yaw_of_quat(q):
@@ -90,17 +164,14 @@ def yaw_of_quat(q):
 
 
 def feedback_dim(args):
-    return {"final_error": Y_DIM, "iou": 1, "success": 1, "hints": 1}[args.feedback]
+    return {"final_error": TASK.y_dim, "iou": 1, "success": 1, "hints": 1}[args.feedback]
 
 
 def feedback_from_obs(obs, kind, success=None):
     """Feedback computed from the (privileged) final observation, which still contains the goal and the T pose."""
     if kind == "success":
         return success.float()[:, None]
-    dxy = obs[:, 26:28] - obs[:, 21:23]
-    goal_yaw = torch.atan2(obs[:, 25], obs[:, 24])
-    dyaw = yaw_of_quat(obs[:, 29:33]) - goal_yaw
-    return torch.cat([dxy, dyaw.cos()[:, None], dyaw.sin()[:, None]], dim=1)
+    return TASK.final_error(obs)
 
 
 class ICLPolicy(nn.Module):
@@ -187,14 +258,7 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     device, N, T = venv.device, args.num_envs, args.num_steps
     low = torch.from_numpy(venv.single_action_space.low).to(device)
     high = torch.from_numpy(venv.single_action_space.high).to(device)
-    obs, _ = venv.reset(seed=seed, options=dict(goal=goals))
-    if mode == "prior_expert":
-        prior_goal = obs[:, GOAL_SLICE].clone()
-        base = venv.unwrapped
-        default = torch.tensor([*base.goal_offset.tolist(), 1e-3], device=device)
-        prior_goal[:, :3] = default
-        prior_goal[:, 3] = torch.cos(torch.tensor(base.goal_z_rot, device=device))
-        prior_goal[:, 4] = torch.sin(torch.tensor(base.goal_z_rot, device=device))
+    obs, _ = venv.reset(seed=seed, options=TASK.reset_options(goals))
     if mode == "student":
         n, cy, ch, chv = ctx["n"], ctx["y"], ctx["hints"], ctx["hint_valid"]
         if ctx_mode == "shuf_y":  # feedback (and hints) of another task
@@ -213,13 +277,11 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     base = venv.unwrapped
     for t in range(T):
         with torch.no_grad():
-            a_lab = expert.get_action(obs, deterministic=True)
+            a_lab = expert.get_action(TASK.expert_obs(obs), deterministic=True)
             if mode == "expert":
                 a = a_lab
             elif mode == "prior_expert":
-                o2 = obs.clone()
-                o2[:, GOAL_SLICE] = prior_goal
-                a = expert.get_action(o2, deterministic=True)
+                a = expert.get_action(TASK.expert_obs(TASK.prior_obs(obs, base)), deterministic=True)
             else:
                 a = policy.decode(student_obs(obs)[:, None], memory, pad)[:, 0]
         a, a_lab = torch.max(torch.min(a, high), low), torch.max(torch.min(a_lab, high), low)
@@ -233,6 +295,7 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
         s = (infos["final_info"] if "final_info" in infos else infos)["success"].bool()
         y_obs = final if y_obs is None else torch.where(succ_once[:, None], y_obs, final)  # frozen once done
         if args.feedback == "iou":
+            assert isinstance(TASK, PushTTask), "iou feedback is only defined for PushT"
             cur = base.pseudo_render_intersection() if t < T - 1 else (torch.maximum(iou, torch.full_like(iou, 0.9)) * s + iou * ~s)
             iou = cur if iou is None else torch.where(succ_once, iou, cur)
         succ_once |= s
@@ -255,7 +318,7 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     return dict(
         obs=xs_t, act=acts_t, lab=labels_t, y=y, alive=alive, hint=hint, hint_valid=hint_valid,
         success_once=succ_once, ep_len=alive.sum(1).float(),
-        pos_err=err[:, :2].norm(dim=1), yaw_err=torch.atan2(err[:, 3], err[:, 2]).abs(),
+        pos_err=TASK.metrics(err)[0], yaw_err=TASK.metrics(err)[1],
     )
 
 
@@ -284,7 +347,7 @@ def add_to_ctx(ctx, ep, args):
 def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode, ctx_mode="normal", frac_prior=0.0):
     """k student episodes with growing context + one expert episode. Returns per-episode logs, context at each stage, expert ep."""
     device = venv.device
-    S = student_obs(torch.zeros(1, venv.single_observation_space.shape[0])).shape[-1]
+    S = student_obs(torch.zeros(1, TASK.obs_dim)).shape[-1]
     A = venv.single_action_space.shape[0]
     y_dim = feedback_dim(args)
     ctx = new_ctx(args, args.num_envs, S, A, y_dim, device)
@@ -307,6 +370,8 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
 
 def main():
     args = tyro.cli(Args)
+    global TASK
+    TASK = TASKS[args.env_id]()
     device = torch.device("cuda")
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
     torch.manual_seed(args.seed)
@@ -317,19 +382,23 @@ def main():
     base = env.unwrapped
     venv = ManiSkillVectorEnv(env, args.num_envs, ignore_terminations=True, record_metrics=True)
     obs_dim, act_dim = venv.single_observation_space.shape[0], venv.single_action_space.shape[0]
-    assert obs_dim == 33, obs_dim
+    assert obs_dim == TASK.obs_dim, obs_dim
 
-    expert = Agent(venv).to(device)
+    class _ExpertSpace:  # the expert only sees the clean task obs (PickCubeBias appends the hidden offset)
+        single_observation_space = type("S", (), {"shape": (TASK.expert_obs(torch.zeros(1, obs_dim)).shape[-1],)})
+        single_action_space = venv.single_action_space
+
+    expert = Agent(_ExpertSpace).to(device)
     expert.load_state_dict(torch.load(args.expert_checkpoint, map_location=device))
     expert.eval()
-    s_dim, y_dim = obs_dim - 5, feedback_dim(args)
+    s_dim, y_dim = student_obs(torch.zeros(1, obs_dim)).shape[-1], feedback_dim(args)
     policy = ICLPolicy(s_dim, act_dim, y_dim, args).to(device)
     opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.num_iterations * args.grad_steps, eta_min=args.lr * 0.02)
 
     with torch.random.fork_rng():
         torch.manual_seed(args.eval_seed)
-        eval_goals = base.sample_goal_delta(args.num_envs)
+        eval_goals = TASK.sample(base, args.num_envs)
 
     def evaluate(ctx_mode="normal"):
         policy.eval()
@@ -354,7 +423,7 @@ def main():
     gen_seed = args.seed * 1000
     for it in range(args.num_iterations):
         t0 = time.time()
-        goals = base.sample_goal_delta(args.num_envs)
+        goals = TASK.sample(base, args.num_envs)
         seed = gen_seed + it * 10
         eps, ctx = collect_task_episodes(
             venv, expert, policy, args, goals, seed, "prior" if it == 0 else "mixed", frac_prior=args.prior_expert_frac)

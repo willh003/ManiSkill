@@ -18,3 +18,4 @@ from .push_t import PushTEnv
 from .pull_cube_tool import PullCubeToolEnv
 from .stack_pyramid import StackPyramidEnv
 from .push_t_goal import PushTGoalEnv
+from .pick_cube_bias import PickCubeBiasEnv
