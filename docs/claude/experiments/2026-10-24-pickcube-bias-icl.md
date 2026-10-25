@@ -111,3 +111,20 @@ fixed across the task's 5 episodes (`PickCubeBias-v1` `reset(options=dict(cube_x
 - The success flag learns nothing: with no cube observation a 1-bit outcome cannot localise the cube and the student's own success rate (~4%) gives too few
   positive examples. This confirms the biased-obs success-flag gains came from the cube observation + contact geometry, not from the flag.
 - Not tried: longer training / bigger model for the error and hints runs (loss still ~0.067 vs 0.016 on the biased task).
+
+### Hidden cube: longer and larger student (2026-10-25)
+60 iterations (30.7k tasks) with the same model (`-hidecube-long`), and 60 iterations with d_model 256 and 4 context + 4 decoder layers (`-hidecube-big`),
+`logs/runs/icl-pick-{final_error,hints}-hidecube-{long,big}`. Final eval success_once at h=0/1/2/3/4 (30-iteration baseline from the table above):
+| feedback | run | h=0 | h=1 | h=2 | h=3 | h=4 | train loss |
+|---|---|---|---|---|---|---|---|
+| true tcp->cube vector | 30 it | 0.04 | 0.49 | 0.60 | 0.65 | 0.55 | 0.068 |
+| | 60 it | 0.06 | 0.52 | 0.67 | 0.73 | 0.66 | 0.071 |
+| | 60 it, larger | 0.04 | 0.40 | 0.63 | 0.72 | 0.70 | 0.035 |
+| expert-action hints | 30 it | 0.05 | 0.49 | 0.74 | 0.80 | 0.74 | 0.067 |
+| | 60 it | 0.06 | 0.57 | 0.78 | 0.88 | 0.84 | 0.071 |
+| | 60 it, larger | 0.04 | 0.62 | 0.84 | 0.92 | 0.90 | 0.036 |
+Controls (shuffled / no feedback / no context) stay <= 0.12 for all runs. Plots: `logs/renders/icl-pick/biased_obs_task.png` (biased-observation task, three feedback
+types) and `logs/renders/icl-pick/hidden_cube_task.png` (hidden-cube task, all runs; panels h=0, 1, 4).
+- Training longer helps both (+8-10 points at h=3-4). A larger model helps hints further (0.92 at h=3, 0.90 at h=4) and halves the train loss, but for the true-error feedback it
+  only helps at h>=3 and hurts at h=1 (0.40). Neither approaches the 0.986 expert; true error plateaus at ~0.7 and hints at ~0.9.
+- h=4 is below h=3 in every run (e.g. 0.84 vs 0.88), consistently, which is not explained: not tested whether the last context slot (it is trained least often) is the cause.
