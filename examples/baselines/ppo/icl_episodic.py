@@ -201,7 +201,7 @@ def yaw_of_quat(q):
 
 
 def feedback_dim(args):
-    return {"final_error": TASK.y_dim, "iou": 1, "success": 1, "hints": 1}[args.feedback]
+    return {"final_error": TASK.y_dim, "iou": 1, "success": 1, "hints": 1, "final_error_tcp": 6, "init_error_tcp": 6}[args.feedback]
 
 
 def feedback_from_obs(obs, kind, success=None):
@@ -301,6 +301,7 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     low = torch.from_numpy(venv.single_action_space.low).to(device)
     high = torch.from_numpy(venv.single_action_space.high).to(device)
     obs, _ = venv.reset(seed=seed, options=TASK.reset_options(goals))
+    obs0 = obs.clone()  # clean obs at the start of the episode (PickCubeBias: includes the true cube position)
     if mode == "student":
         n, cy, ch, chv = ctx["n"], ctx["y"], ctx["hints"], ctx["hint_valid"]
         if ctx_mode == "shuf_y":  # feedback (and hints) of another task
@@ -347,6 +348,12 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     m = args.n_hints if args.feedback == "hints" else 0
     if args.feedback == "iou":
         y = iou[:, None]
+    elif args.feedback in ("final_error_tcp", "init_error_tcp"):
+        # PickCubeBias only. [cube - tcp, tcp] at the termination step, so the absolute cube position is a linear function of the token.
+        # init_error_tcp uses the cube position at the start of the episode (the hidden task variable) instead of its final position.
+        tcp = y_obs[:, 19:22]
+        vec = y_obs[:, 36:39] if args.feedback == "final_error_tcp" else (obs0[:, 29:32] - obs0[:, 42:45]) - tcp
+        y = torch.cat([vec, tcp], dim=1)
     elif args.feedback == "hints":
         y = torch.zeros(N, 1, device=device)  # constant token: no outcome feedback
     else:
