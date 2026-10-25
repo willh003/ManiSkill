@@ -92,17 +92,26 @@ class PickBiasTask:
 
     obs_dim, y_dim = 45, 3
 
-    def __init__(self, hide_grasp="none"):
+    def __init__(self, hide_grasp="none", hide_cube=False):
+        self.hide_cube = hide_cube
         # dims removed from the student's obs: the is_grasped flag (18), plus the finger joints that also reveal a grasp (qpos 7:9, qvel 16:18)
         drop = {"none": [], "flag": [18], "fingers": [7, 8, 16, 17, 18]}[hide_grasp]
+        if hide_cube:  # the student gets no cube information at all: obj_pose 29:36, tcp_to_obj_pos 36:39, obj_to_goal_pos 39:42
+            drop = drop + list(range(29, 42))
         self.keep = [i for i in range(42) if i not in drop]
 
     def sample(self, base, n):
         o = torch.zeros(n, 3, device=base.device)
+        if self.hide_cube:  # the task is a hidden cube xy, fixed across the task's episodes
+            o[:, :2] = (torch.rand(n, 2, device=base.device) * 2 - 1) * base.cube_spawn_half_size
+            o[:, :2] += torch.tensor(base.cube_spawn_center, device=base.device)
+            return o
         o[:, :2] = (torch.rand(n, 2, device=base.device) * 2 - 1) * base.bias_range
         return o
 
     def reset_options(self, tasks):
+        if self.hide_cube:
+            return dict(cube_xy=tasks[:, :2], offset=torch.zeros_like(tasks))
         return dict(offset=tasks)
 
     def student_obs(self, obs):
@@ -121,6 +130,13 @@ class PickBiasTask:
         """An expert that assumes there is no bias acts on the biased observation."""
         from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
 
+        if self.hide_cube:  # an expert told the cube is at the table centre
+            o = obs[..., :42].clone()
+            cube = torch.tensor([0.0, 0.0, 0.02], device=obs.device)
+            o[..., 29:32] = cube
+            o[..., 36:39] = cube - o[..., 19:22]
+            o[..., 39:42] = o[..., 26:29] - cube
+            return o
         return observed_cube_obs(obs)
 
     def final_error(self, obs):
@@ -147,6 +163,8 @@ class Args:
     k: int = 4
     """student episodes per task, i.e. context lengths h = 0..k"""
     num_iterations: int = 20
+    hide_cube: bool = False
+    """PickCubeBias only: the student gets no cube observation, and the task is the cube xy (fixed across a task's episodes)"""
     hide_grasp: str = "none"
     """PickCubeBias only: none | flag (drop is_grasped from the student obs) | fingers (also drop the finger joint qpos/qvel)"""
     ctx_features: str = "all"
@@ -395,7 +413,7 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
 def main():
     args = tyro.cli(Args)
     global TASK
-    TASK = TASKS[args.env_id](**(dict(hide_grasp=args.hide_grasp) if args.env_id == "PickCubeBias-v1" else {}))
+    TASK = TASKS[args.env_id](**(dict(hide_grasp=args.hide_grasp, hide_cube=args.hide_cube) if args.env_id == "PickCubeBias-v1" else {}))
     device = torch.device("cuda")
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
     torch.manual_seed(args.seed)

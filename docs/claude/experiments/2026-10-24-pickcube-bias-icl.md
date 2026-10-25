@@ -94,3 +94,20 @@ that trajectory matters (final positions only, contact events).
   gives a lot, a miss gives nothing. Correlational (the shift test above is the causal one). 95% of episodes push the cube, which is why the success
   flag's gain does not depend on the flag: the information is in the contact geometry (gripper position when the observed cube starts to move,
   and how it moves).
+
+## Cube hidden entirely, fixed per task (`--hide-cube`, 2026-10-24)
+Student obs has no cube entries (obj_pose, tcp_to_obj_pos, obj_to_goal_pos removed; is_grasped, goal, tcp, joints kept). The task is a hidden cube xy,
+fixed across the task's 5 episodes (`PickCubeBias-v1` `reset(options=dict(cube_xy=...))`; cube yaw and goal still random each episode). Runs:
+`logs/runs/icl-pick-{final_error,success,hints}-hidecube`, 30 iterations. Reference: expert with the true cube 0.986; expert told the cube is at the centre 0.008.
+| feedback | h=0 | h=1 | h=2 | h=3 | h=4 | shuf_y h=1 | no_y h=1 | no_ctx h=1 |
+|---|---|---|---|---|---|---|---|---|
+| true tcp->cube vector | 0.04 | 0.49 | 0.60 | 0.65 | 0.55 | 0.04 | 0.08 | 0.03 |
+| expert-action hints | 0.05 | 0.49 | 0.74 | 0.80 | 0.74 | 0.05 | 0.07 | 0.04 |
+| success flag | 0.05 | 0.05 | 0.05 | 0.07 | 0.04 | 0.05 | 0.04 | 0.03 |
+- h=0 is chance (cube unobserved). With the true error or hints the student localises the cube from the feedback (controls at chance), but much less
+  accurately than with the biased-obs task (0.49 at h=1, vs 0.97): the cube has to be reconstructed from feedback + the tcp trajectory instead of just
+  correcting a 5 cm bias.
+- Hints keep improving with more episodes (0.49 -> 0.80 at h=3), so here extra episodes matter. The true-error run plateaus at ~0.6 and is noisy (0.65 -> 0.55 at h=4).
+- The success flag learns nothing: with no cube observation a 1-bit outcome cannot localise the cube and the student's own success rate (~4%) gives too few
+  positive examples. This confirms the biased-obs success-flag gains came from the cube observation + contact geometry, not from the flag.
+- Not tried: longer training / bigger model for the error and hints runs (loss still ~0.067 vs 0.016 on the biased task).

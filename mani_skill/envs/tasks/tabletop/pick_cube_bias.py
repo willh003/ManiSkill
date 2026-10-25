@@ -4,6 +4,7 @@ import torch
 
 from mani_skill.envs.tasks.tabletop.pick_cube import PickCubeEnv
 from mani_skill.utils.registration import register_env
+from mani_skill.utils.structs.pose import Pose
 
 
 @register_env("PickCubeBias-v1", max_episode_steps=50)
@@ -32,6 +33,15 @@ class PickCubeBiasEnv(PickCubeEnv):
             offset = offset.to(self.device)
             offset = offset[env_idx] if len(offset) == self.num_envs else offset
         self.cube_offset[env_idx] = offset
+
+        # fix the cube xy (a hidden per-task cube position, same for all episodes of a task); the yaw and the goal stay random
+        cube_xy = options.get("cube_xy") if options is not None else None
+        if cube_xy is not None:
+            cube_xy = cube_xy.to(self.device)
+            cube_xy = cube_xy[env_idx] if len(cube_xy) == self.num_envs else cube_xy
+            p, q = self.cube.pose.p[env_idx].clone(), self.cube.pose.q[env_idx]
+            p[:, :2] = cube_xy
+            self.cube.set_pose(Pose.create_from_pq(p, q))
 
     def _get_obs_extra(self, info: dict):
         obs = super()._get_obs_extra(info)
