@@ -8,10 +8,10 @@ Reset options keep a task fixed across its episodes:
 
 Student task `PegTask` (`icl_episodic.py --env-id PegInsertionSideBias-v1`):
 - biased (default): student sees `observed_hole_obs` (box_hole_pose shifted by the offset); task variable = offset.
-- hidden (`--hide-hole`): box_hole_pose removed from the student obs (36 dims); task variable = box (x, y, yaw), fixed per task.
+- hidden (`--hide-hole`): box_hole_pose removed from the student obs (35 dims); task variable = box (x, y, yaw), fixed per task.
 - feedback `final_error` (8 dims): [hole - peg head (world), peg head (world), cos/sin hole yaw] at the end of the episode, privileged. The hole is
   kinematic and does not move, so this is the hidden variable exactly (unlike the pick cube, which is pushed). `hints` / `success` as for pick.
 - Prior expert (data diversity, reference): biased = acts on the unbiased obs; hidden = told the hole is at the default box pose (0, 0.3, yaw pi/2).
-Caveats: geometry (peg/hole size, hole offset inside the box) is fixed per env index (reconfiguration_freq=0), so the same 512 geometries repeat every
+The hole radius (obs 42) is dropped from the student obs (= peg radius + 3 mm). Caveats: geometry (peg/hole size, hole offset inside the box) is fixed per env index (reconfiguration_freq=0), so the same 512 geometries repeat every
 iteration and eval; the student sees peg size/radius so it could in principle identify them. Expert: `logs/runs/peg-expert-fast/final_ckpt.pt` (success_once ~0.73).
 Slurm: `examples/baselines/ppo/slurm/icl_peg.sbatch` (FB, SUFFIX, EXTRA=--hide-hole).

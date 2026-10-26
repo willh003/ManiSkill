@@ -156,7 +156,7 @@ class PegTask:
 
     def __init__(self, hide_hole=False):
         self.hide_hole = hide_hole
-        self.keep = [i for i in range(43) if not (hide_hole and 35 <= i < 42)]
+        self.keep = [i for i in range(42) if not (hide_hole and 35 <= i < 42)]  # 42 = hole radius = peg radius + 3 mm: redundant
 
     def sample(self, base, n):
         from mani_skill.envs.tasks.tabletop import peg_insertion_side_bias as pb
