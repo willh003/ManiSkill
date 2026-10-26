@@ -233,8 +233,8 @@ class Args:
     full_info: bool = False
     """PegInsertionSideBias only: nothing is hidden (the student sees the true hole pose; the box pose is fixed per task, random across tasks)"""
     ctx_policies: str = ""
-    """comma- or colon-separated policy checkpoints (or 'expert' = --expert-checkpoint), one per context episode (needs k entries): the first k episodes of a
-    task are rolled out (deterministically) by these instead of by the student; the student then acts on episode h given the first h of them"""
+    """comma- or colon-separated policy checkpoints (or 'expert' = --expert-checkpoint), one per scripted episode (at most k): the first m episodes of a
+    task are rolled out (deterministically) by these instead of by the student; the remaining episodes are the student's own"""
     ctx_random_order: bool = False
     """with --ctx-policies: use an independent random permutation of the listed policies for every task (default: the listed order)"""
     hide_grasp: str = "none"
@@ -493,34 +493,45 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
     return eps, ctx
 
 
-def ctx_order(args, N, device, gen=None):
-    """(N, k) index into CTX_POLS of the policy that rolls out each context episode of each task."""
+def ctx_order(args, N, device, m, gen=None):
+    """(N, m) index into CTX_POLS of the policy that rolls out each scripted context episode of each task."""
     if args.ctx_random_order:
-        return torch.rand(N, args.k, device=device, generator=gen).argsort(1)
-    return torch.arange(args.k, device=device)[None].expand(N, -1)
+        return torch.rand(N, m, device=device, generator=gen).argsort(1)
+    return torch.arange(m, device=device)[None].expand(N, -1)
 
 
 def collect_scripted_episodes(venv, expert, policy, args, goals, seed, student_mode, ctx_mode="normal", frac_prior=0.0, gen=None):
-    """Context = k episodes rolled out by CTX_POLS (not by the student). The student then acts on episode h given the first h of them
-    (h = 0..k-1, plus h = k when evaluating). Returns the student episodes (each with its own context size h) and the full context."""
-    device = venv.device
+    """The first m = len(CTX_POLS) episodes of a task are rolled out by CTX_POLS, the others (up to k) by the student. The student's
+    query episode h sees the first h episodes of the context; for h < m that is a separate rollout (the scripted episode is the context),
+    for h >= m it is the episode that is then appended to the context. Evaluation adds the query h = k. Returns the student episodes
+    (each with its own context size h) and the full context."""
+    device, N, m = venv.device, args.num_envs, len(CTX_POLS)
     S = student_obs(torch.zeros(1, TASK.obs_dim)).shape[-1]
     A = venv.single_action_space.shape[0]
-    ctx = new_ctx(args, args.num_envs, S, A, feedback_dim(args), device)
-    order = ctx_order(args, args.num_envs, device, gen)
-    for e in range(args.k):
-        add_to_ctx(ctx, rollout(venv, expert, policy, args, goals, seed + e, "scripted", pol_idx=order[:, e]), args)
-    eps = []
-    for h in range(args.k + (1 if student_mode == "eval" else 0)):
+    ctx = new_ctx(args, N, S, A, feedback_dim(args), device)
+    order = ctx_order(args, N, device, m, gen)
+
+    def student_episode(h):
         c = dict(ctx, n=torch.full_like(ctx["n"], h))
         mode = "prior_expert" if student_mode == "prior" else "student"
         ep = rollout(venv, expert, policy, args, goals, seed + 4 + h, mode, c, ctx_mode)
         if student_mode == "mixed" and frac_prior > 0:
             pe = rollout(venv, expert, policy, args, goals, seed + 4 + h, "prior_expert")
-            m = torch.rand(args.num_envs, device=device) < frac_prior
-            ep = {key: torch.where(m.view(-1, *[1] * (v.dim() - 1)), pe[key], v) for key, v in ep.items()}
+            mask = torch.rand(N, device=device) < frac_prior
+            ep = {key: torch.where(mask.view(-1, *[1] * (v.dim() - 1)), pe[key], v) for key, v in ep.items()}
         ep["ctx_n"] = h
-        eps.append(ep)
+        return ep
+
+    eps = []
+    for e in range(args.k):
+        if e < m:
+            add_to_ctx(ctx, rollout(venv, expert, policy, args, goals, seed + e, "scripted", pol_idx=order[:, e]), args)
+        else:
+            eps.append(student_episode(e))
+            add_to_ctx(ctx, eps[-1], args)
+    eps = [student_episode(h) for h in range(min(m, args.k))] + eps  # queries at h < m, after the scripted context exists
+    if student_mode == "eval":
+        eps.append(student_episode(args.k))
     return eps, ctx
 
 
@@ -550,7 +561,7 @@ def main():
     expert.eval()
     if args.ctx_policies:
         names = re.split("[,:]", args.ctx_policies)
-        assert len(names) == args.k, "--ctx-policies needs one entry per context episode (k)"
+        assert 1 <= len(names) <= args.k, "--ctx-policies: one entry per scripted context episode (the first ones), at most k"
         for n in names:
             if n == "expert":
                 CTX_POLS.append(expert)
