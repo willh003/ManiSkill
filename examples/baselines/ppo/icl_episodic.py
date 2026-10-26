@@ -22,6 +22,7 @@ Each DAgger iteration:
 Example:
     python icl_episodic.py --exp-name icl
 """
+import re
 import time
 from dataclasses import dataclass
 
@@ -154,22 +155,23 @@ class PegTask:
 
     obs_dim, y_dim = 46, 8
 
-    def __init__(self, hide_hole=False):
+    def __init__(self, hide_hole=False, full_info=False):
         self.hide_hole = hide_hole
+        self.full_info = full_info  # the student sees the true hole pose; the task is still a fixed box pose per task
         self.keep = [i for i in range(42) if not (hide_hole and 35 <= i < 42)]  # 42 = hole radius = peg radius + 3 mm: redundant
 
     def sample(self, base, n):
         from mani_skill.envs.tasks.tabletop import peg_insertion_side_bias as pb
 
         d = base.device
-        if self.hide_hole:
+        if self.hide_hole or self.full_info:
             lo = torch.tensor([*pb.BOX_XY_LOW, pb.BOX_YAW_LOW], device=d)
             hi = torch.tensor([*pb.BOX_XY_HIGH, pb.BOX_YAW_HIGH], device=d)
             return lo + (hi - lo) * torch.rand(n, 3, device=d)
         return (torch.rand(n, 3, device=d) * 2 - 1) * torch.tensor([base.bias_xy, base.bias_xy, base.bias_yaw], device=d)
 
     def reset_options(self, tasks):
-        if self.hide_hole:
+        if self.hide_hole or self.full_info:
             return dict(box_pose=tasks, offset=torch.zeros_like(tasks))
         return dict(offset=tasks)
 
@@ -208,6 +210,7 @@ class PegTask:
 
 TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask, "PegInsertionSideBias-v1": PegTask}
 TASK = PushTTask()
+CTX_POLS = []  # policies that roll out the context episodes (--ctx-policies), in the order listed
 
 
 @dataclass
@@ -227,6 +230,13 @@ class Args:
     """PickCubeBias only: the student gets no cube observation, and the task is the cube xy (fixed across a task's episodes)"""
     hide_hole: bool = False
     """PegInsertionSideBias only: the student gets no hole pose, and the task is the box pose (x, y, yaw) (else: biased observed hole pose)"""
+    full_info: bool = False
+    """PegInsertionSideBias only: nothing is hidden (the student sees the true hole pose; the box pose is fixed per task, random across tasks)"""
+    ctx_policies: str = ""
+    """comma- or colon-separated policy checkpoints (or 'expert' = --expert-checkpoint), one per context episode (needs k entries): the first k episodes of a
+    task are rolled out (deterministically) by these instead of by the student; the student then acts on episode h given the first h of them"""
+    ctx_random_order: bool = False
+    """with --ctx-policies: use an independent random permutation of the listed policies for every task (default: the listed order)"""
     hide_grasp: str = "none"
     """PickCubeBias only: none | flag (drop is_grasped from the student obs) | fingers (also drop the finger joint qpos/qvel)"""
     ctx_features: str = "all"
@@ -355,8 +365,8 @@ def ctx_step_index(T, stride, device):
     return idx
 
 
-def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal"):
-    """One episode on every task. mode: 'student' | 'expert' | 'prior_expert' (expert told the default goal).
+def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal", pol_idx=None):
+    """One episode on every task. mode: 'student' | 'expert' | 'prior_expert' (expert told the default goal) | 'scripted' (CTX_POLS[pol_idx[env]]).
     ctx: dict(steps (N,k,Tc,S+A), y (N,k,Y), n (N,)) of previous episodes; ctx_mode: normal | shuf_y | no_y | no_ctx.
     Returns states, executed actions, expert labels, success flags and the feedback for this episode."""
     device, N, T = venv.device, args.num_envs, args.num_steps
@@ -387,6 +397,10 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
                 a = a_lab
             elif mode == "prior_expert":
                 a = expert.get_action(TASK.expert_obs(TASK.prior_obs(obs, base)), deterministic=True)
+            elif mode == "scripted":
+                a = a_lab
+                for i, pol in enumerate(CTX_POLS):
+                    a = torch.where((pol_idx == i)[:, None], pol.get_action(TASK.expert_obs(obs), deterministic=True), a)
             else:
                 a = policy.decode(student_obs(obs)[:, None], memory, pad)[:, 0]
         a, a_lab = torch.max(torch.min(a, high), low), torch.max(torch.min(a_lab, high), low)
@@ -479,10 +493,41 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
     return eps, ctx
 
 
+def ctx_order(args, N, device, gen=None):
+    """(N, k) index into CTX_POLS of the policy that rolls out each context episode of each task."""
+    if args.ctx_random_order:
+        return torch.rand(N, args.k, device=device, generator=gen).argsort(1)
+    return torch.arange(args.k, device=device)[None].expand(N, -1)
+
+
+def collect_scripted_episodes(venv, expert, policy, args, goals, seed, student_mode, ctx_mode="normal", frac_prior=0.0, gen=None):
+    """Context = k episodes rolled out by CTX_POLS (not by the student). The student then acts on episode h given the first h of them
+    (h = 0..k-1, plus h = k when evaluating). Returns the student episodes (each with its own context size h) and the full context."""
+    device = venv.device
+    S = student_obs(torch.zeros(1, TASK.obs_dim)).shape[-1]
+    A = venv.single_action_space.shape[0]
+    ctx = new_ctx(args, args.num_envs, S, A, feedback_dim(args), device)
+    order = ctx_order(args, args.num_envs, device, gen)
+    for e in range(args.k):
+        add_to_ctx(ctx, rollout(venv, expert, policy, args, goals, seed + e, "scripted", pol_idx=order[:, e]), args)
+    eps = []
+    for h in range(args.k + (1 if student_mode == "eval" else 0)):
+        c = dict(ctx, n=torch.full_like(ctx["n"], h))
+        mode = "prior_expert" if student_mode == "prior" else "student"
+        ep = rollout(venv, expert, policy, args, goals, seed + 4 + h, mode, c, ctx_mode)
+        if student_mode == "mixed" and frac_prior > 0:
+            pe = rollout(venv, expert, policy, args, goals, seed + 4 + h, "prior_expert")
+            m = torch.rand(args.num_envs, device=device) < frac_prior
+            ep = {key: torch.where(m.view(-1, *[1] * (v.dim() - 1)), pe[key], v) for key, v in ep.items()}
+        ep["ctx_n"] = h
+        eps.append(ep)
+    return eps, ctx
+
+
 def main():
     args = tyro.cli(Args)
     global TASK
-    kwargs = {"PickCubeBias-v1": dict(hide_grasp=args.hide_grasp, hide_cube=args.hide_cube), "PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole)}
+    kwargs = {"PickCubeBias-v1": dict(hide_grasp=args.hide_grasp, hide_cube=args.hide_cube), "PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole, full_info=args.full_info)}
     TASK = TASKS[args.env_id](**kwargs.get(args.env_id, {}))
     device = torch.device("cuda")
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
@@ -503,6 +548,18 @@ def main():
     expert = Agent(_ExpertSpace).to(device)
     expert.load_state_dict(torch.load(args.expert_checkpoint, map_location=device))
     expert.eval()
+    if args.ctx_policies:
+        names = re.split("[,:]", args.ctx_policies)
+        assert len(names) == args.k, "--ctx-policies needs one entry per context episode (k)"
+        for n in names:
+            if n == "expert":
+                CTX_POLS.append(expert)
+                continue
+            pol = Agent(_ExpertSpace).to(device)
+            pol.load_state_dict(torch.load(n, map_location=device))
+            pol.eval()
+            CTX_POLS.append(pol)
+    collect = collect_scripted_episodes if args.ctx_policies else collect_task_episodes
     s_dim, y_dim = student_obs(torch.zeros(1, obs_dim)).shape[-1], feedback_dim(args)
     policy = ICLPolicy(s_dim, act_dim, y_dim, args).to(device)
     opt = torch.optim.Adam(policy.parameters(), lr=args.lr)
@@ -514,7 +571,10 @@ def main():
 
     def evaluate(ctx_mode="normal"):
         policy.eval()
-        eps, _ = collect_task_episodes(venv, expert, policy, args, eval_goals, args.eval_seed, "eval", ctx_mode)
+        extra = {}
+        if args.ctx_policies:  # same task orders for every evaluation
+            extra["gen"] = torch.Generator(device=device).manual_seed(args.eval_seed)
+        eps, _ = collect(venv, expert, policy, args, eval_goals, args.eval_seed, "eval", ctx_mode, **extra)
         policy.train()
         return [
             dict(h=i, success_once=ep["success_once"].float().mean().item(), ep_len=ep["ep_len"].mean().item(),
@@ -529,6 +589,12 @@ def main():
         refs[name] = dict(success_once=ep["success_once"].float().mean().item(), ep_len=ep["ep_len"].mean().item())
         print(f"reference {name:20s} {refs[name]}", flush=True)
 
+    if args.ctx_policies:  # how good are the context policies on the eval tasks (success_once)
+        for i, name in enumerate(re.split("[,:]", args.ctx_policies)):
+            ep = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "scripted", pol_idx=torch.full((args.num_envs,), i, device=device))
+            refs[f"ctx_policy_{i}_{name.split('/')[-1]}"] = dict(success_once=ep["success_once"].float().mean().item(), ep_len=ep["ep_len"].mean().item())
+            print(f"reference ctx policy {i} {name:40s} {refs[f'ctx_policy_{i}_{name.split(chr(47))[-1]}']}", flush=True)
+
     # aggregated dataset, per task: query episodes (k student + 1 expert), their expert labels, and the context available at each
     D = dict(q_obs=[], q_lab=[], q_alive=[], ctx_steps=[], ctx_y=[], ctx_valid=[], ctx_hints=[], ctx_hint_valid=[])
     log = []
@@ -537,7 +603,7 @@ def main():
         t0 = time.time()
         goals = TASK.sample(base, args.num_envs)
         seed = gen_seed + it * 10
-        eps, ctx = collect_task_episodes(
+        eps, ctx = collect(
             venv, expert, policy, args, goals, seed, "prior" if it == 0 else "mixed", frac_prior=args.prior_expert_frac)
         ex = rollout(venv, expert, policy, args, goals, seed + 9, "expert")
         D["q_obs"].append(torch.stack([e["obs"] for e in eps] + [ex["obs"]], 1))  # (N, k+1, T, S)
