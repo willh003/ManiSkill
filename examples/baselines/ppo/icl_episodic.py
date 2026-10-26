@@ -146,7 +146,67 @@ class PickBiasTask:
         return err[:, :2].norm(dim=1), torch.zeros(len(err), device=err.device)
 
 
-TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask}
+class PegTask:
+    """Hidden hole pose (PegInsertionSideBias-v1). hide_hole=False: the student sees box_hole_pose shifted by a per-task offset
+    (dx, dy, dyaw); hide_hole=True: the student does not see it, and the task is the true box pose (x, y, yaw), fixed across the
+    task's episodes. The expert sees the clean obs. The feedback is the true hole pose relative to the final peg head:
+    [hole - head (world frame, 3), head (3), cos(hole yaw), sin(hole yaw)], so the hole pose is a function of the token."""
+
+    obs_dim, y_dim = 46, 8
+
+    def __init__(self, hide_hole=False):
+        self.hide_hole = hide_hole
+        self.keep = [i for i in range(43) if not (hide_hole and 35 <= i < 42)]
+
+    def sample(self, base, n):
+        from mani_skill.envs.tasks.tabletop import peg_insertion_side_bias as pb
+
+        d = base.device
+        if self.hide_hole:
+            lo = torch.tensor([*pb.BOX_XY_LOW, pb.BOX_YAW_LOW], device=d)
+            hi = torch.tensor([*pb.BOX_XY_HIGH, pb.BOX_YAW_HIGH], device=d)
+            return lo + (hi - lo) * torch.rand(n, 3, device=d)
+        return (torch.rand(n, 3, device=d) * 2 - 1) * torch.tensor([base.bias_xy, base.bias_xy, base.bias_yaw], device=d)
+
+    def reset_options(self, tasks):
+        if self.hide_hole:
+            return dict(box_pose=tasks, offset=torch.zeros_like(tasks))
+        return dict(offset=tasks)
+
+    def student_obs(self, obs):
+        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import observed_hole_obs
+
+        return observed_hole_obs(obs)[..., self.keep]
+
+    def expert_obs(self, obs):
+        return obs[..., :43]
+
+    def kin_idx(self):
+        raise NotImplementedError("--ctx-features kin is only defined for PickCubeBias-v1")
+
+    def prior_obs(self, obs, base):
+        """Hidden: an expert told the hole is at the default box pose (true height). Biased: an expert that assumes there is no bias."""
+        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import observed_hole_obs
+
+        o = observed_hole_obs(obs)
+        if self.hide_hole:
+            o = obs[..., :43].clone()
+            o[..., 35:37] = torch.tensor([0.0, 0.3], device=obs.device)
+            o[..., 38:42] = torch.tensor([0.7071, 0.0, 0.0, 0.7071], device=obs.device)
+        return o
+
+    def final_error(self, obs):
+        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import peg_head_pos
+
+        head = peg_head_pos(obs)
+        yaw = yaw_of_quat(obs[..., 38:42])
+        return torch.cat([obs[..., 35:38] - head, head, yaw.cos()[..., None], yaw.sin()[..., None]], dim=-1)
+
+    def metrics(self, err):
+        return err[:, :3].norm(dim=1), torch.zeros(len(err), device=err.device)
+
+
+TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask, "PegInsertionSideBias-v1": PegTask}
 TASK = PushTTask()
 
 
@@ -165,6 +225,8 @@ class Args:
     num_iterations: int = 20
     hide_cube: bool = False
     """PickCubeBias only: the student gets no cube observation, and the task is the cube xy (fixed across a task's episodes)"""
+    hide_hole: bool = False
+    """PegInsertionSideBias only: the student gets no hole pose, and the task is the box pose (x, y, yaw) (else: biased observed hole pose)"""
     hide_grasp: str = "none"
     """PickCubeBias only: none | flag (drop is_grasped from the student obs) | fingers (also drop the finger joint qpos/qvel)"""
     ctx_features: str = "all"
@@ -420,7 +482,8 @@ def collect_task_episodes(venv, expert, policy, args, goals, seed, student_mode,
 def main():
     args = tyro.cli(Args)
     global TASK
-    TASK = TASKS[args.env_id](**(dict(hide_grasp=args.hide_grasp, hide_cube=args.hide_cube) if args.env_id == "PickCubeBias-v1" else {}))
+    kwargs = {"PickCubeBias-v1": dict(hide_grasp=args.hide_grasp, hide_cube=args.hide_cube), "PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole)}
+    TASK = TASKS[args.env_id](**kwargs.get(args.env_id, {}))
     device = torch.device("cuda")
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
     torch.manual_seed(args.seed)
