@@ -144,3 +144,6 @@ success_once at h=0/1/2/3/4 (last iteration):
 Controls (shuf_y/no_y/no_ctx) stay ~0.03-0.06 for all. **Conclusion:** (a) is not the issue; adding tcp changes nothing. (b) is: when the
 feedback is the true start position the task is solved at h=1 (expert-level, 0.986). The gap is the cube moving during the episode, so
 the final cube position is only a noisy proxy for the start position. Expert reference 0.986.
+
+Plot (h=0/1/4 curves over training tasks, expert line): `logs/renders/icl-pick/hidden_cube_tcp_variants.png`. Final-cube variants with and without
+the tcp pose overlap (~0.40-0.43 at h=1, ~0.67-0.70 at h=4); the start-cube variant reaches ~0.97 within ~3k tasks and sits on the expert line.
