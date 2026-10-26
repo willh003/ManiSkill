@@ -16,7 +16,7 @@ TASKS = [  # (run dir, title)
     ("pick-expert", "PickCube-v1, 64 eval episodes (stopped at 13M)"),
     ("peg-expert-fast", "PegInsertionSide-v1, 16 eval episodes"),
 ]
-SERIES = [("eval/success_once", "success at any step", "#2a78d6"), ("eval/success_at_end", "success at final step", "#eb6834")]
+SERIES = [("eval/success_once", "success at any step", "#2a78d6")]
 INK, MUTED, GRID, SURFACE = "#0b0b0b", "#52514e", "#e6e5e1", "#fcfcfb"
 
 
