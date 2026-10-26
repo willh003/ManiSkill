@@ -128,3 +128,19 @@ types) and `logs/renders/icl-pick/hidden_cube_task.png` (hidden-cube task, all r
 - Training longer helps both (+8-10 points at h=3-4). A larger model helps hints further (0.92 at h=3, 0.90 at h=4) and halves the train loss, but for the true-error feedback it
   only helps at h>=3 and hurts at h=1 (0.40). Neither approaches the 0.986 expert; true error plateaus at ~0.7 and hints at ~0.9.
 - h=4 is below h=3 in every run (e.g. 0.84 vs 0.88), consistently, which is not explained: not tested whether the last context slot (it is trained least often) is the cause.
+
+## Why is hidden-cube true-error feedback imperfect? (tcp pose in token, 60 it, d_model 256, 4+4 layers)
+Hypotheses: (a) final gripper pose missing from context, (b) feedback is the *final* cube pos but the hidden variable is the *start* pos
+(student pushes the cube in ~95% of episodes). Runs: `logs/runs/icl-pick-{final_error_tcp,init_error_tcp}-hidecube-big`
+(jobs 42327879/42327884). Token = [cube - tcp, tcp], with cube = final (`final_error_tcp`) or start (`init_error_tcp`).
+
+success_once at h=0/1/2/3/4 (last iteration):
+| feedback | h0 | h1 | h2 | h3 | h4 |
+|---|---|---|---|---|---|
+| final_error (earlier) | 0.04 | 0.40 | 0.63 | 0.72 | 0.70 |
+| final_error_tcp | 0.04 | 0.43 | 0.63 | 0.69 | 0.67 |
+| init_error_tcp | 0.06 | 0.975 | 0.98 | 0.975 | 0.98 |
+
+Controls (shuf_y/no_y/no_ctx) stay ~0.03-0.06 for all. **Conclusion:** (a) is not the issue; adding tcp changes nothing. (b) is: when the
+feedback is the true start position the task is solved at h=1 (expert-level, 0.986). The gap is the cube moving during the episode, so
+the final cube position is only a noisy proxy for the start position. Expert reference 0.986.
