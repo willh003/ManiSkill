@@ -45,6 +45,8 @@ from run_logging import LOG_ROOT, RunDir
 
 TASK = PushTTask()
 TEXT_ENC = None  # frozen sentence encoder for --feedback language_pretrained
+TOK_ENC = None  # (tokenizer, frozen T5 encoder) for --feedback language_tokens
+TOK_LEN = 36  # word pieces per command (padded)
 CTX_POLS = []  # policies that roll out the context episodes (--ctx-policies), in the order listed
 
 
@@ -73,9 +75,11 @@ class Args:
     feedback: str = "final_error"
     """final_error: the task's privileged final-state error (see icl_tasks.py); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
     at the steps where the student's action differed most from the expert's; language (PegTask): the final error as a templated text command, e.g.
-    "move the peg 4.2 cm forward and 1.5 cm right and 0.3 cm down then turn it 12 degrees clockwise", fed to the student as word tokens; language_pretrained: the same command embedded by a frozen sentence encoder (--text-encoder), one feedback token"""
+    "move the peg 4.2 cm forward and 1.5 cm right and 0.3 cm down then turn it 12 degrees clockwise", fed to the student as word tokens; language_tokens: the command text -> frozen T5 encoder (--token-encoder), one LM feature vector per word piece (no hand-built vocabulary); language_pretrained: the same command embedded by a frozen sentence encoder (--text-encoder), one feedback token"""
     text_encoder: str = "sentence-transformers/all-MiniLM-L6-v2"
     """--feedback language_pretrained: frozen sentence-transformers model that embeds the command text into the feedback token"""
+    token_encoder: str = "google/flan-t5-small"
+    """--feedback language_tokens: frozen seq2seq LM whose encoder gives one contextual vector per word piece of the command text"""
     n_hints: int = 5
     """number of hint steps per episode (--feedback hints)"""
     d_model: int = 128
@@ -100,7 +104,8 @@ def student_obs(obs):
 
 def feedback_dim(args):
     return {"final_error": lambda: TASK.y_dim, "success": lambda: 1, "hints": lambda: 1, "language": lambda: TASK.lang_len,
-            "language_pretrained": lambda: TEXT_ENC.get_sentence_embedding_dimension()}[args.feedback]()
+            "language_pretrained": lambda: TEXT_ENC.get_sentence_embedding_dimension(),
+            "language_tokens": lambda: (TOK_LEN, TOK_ENC[1].config.d_model + 1)}[args.feedback]()
 
 
 def feedback_from_obs(obs, kind, success=None):
@@ -109,6 +114,12 @@ def feedback_from_obs(obs, kind, success=None):
         return success.float()[:, None]
     if kind == "language":
         return TASK.language(obs).float()  # word ids (0 = pad), stored in the float feedback buffers
+    if kind == "language_tokens":  # (n, TOK_LEN, D + 1): per word piece LM features (fp16) and the attention mask as the last channel
+        tok, enc = TOK_ENC
+        b = tok(command_text(TASK.language(obs)), return_tensors="pt", padding="max_length", max_length=TOK_LEN, truncation=True).to(obs.device)
+        with torch.no_grad():
+            h = enc(input_ids=b.input_ids, attention_mask=b.attention_mask).last_hidden_state
+        return torch.cat([h, b.attention_mask[..., None].to(h.dtype)], -1).half()
     if kind == "language_pretrained":
         return TEXT_ENC.encode(command_text(TASK.language(obs)), convert_to_tensor=True, show_progress_bar=False).clone()
     return TASK.final_error(obs)
@@ -117,6 +128,8 @@ def feedback_from_obs(obs, kind, success=None):
 class ICLPolicy(nn.Module):
     def __init__(self, s_dim, a_dim, y_dim, args):
         super().__init__()
+        y_shape = y_dim if isinstance(y_dim, tuple) else (y_dim,)  # (L, D + 1) for language_tokens
+        y_dim = y_shape[-1]
         d, H = args.d_model, args.n_heads
         self.args = args
         self.register_buffer("s_mean", torch.zeros(s_dim))
@@ -125,9 +138,11 @@ class ICLPolicy(nn.Module):
         self.register_buffer("y_std", torch.ones(y_dim))
         self.step_in = nn.Linear(s_dim + a_dim, d)
         self.lang = args.feedback == "language"
-        self.y_in = nn.Linear(y_dim, d)
+        self.lm_tokens = args.feedback == "language_tokens"
+        self.y_in = nn.Linear(y_dim - 1 if self.lm_tokens else y_dim, d)
+        self.y_ln = nn.LayerNorm(y_dim - 1) if self.lm_tokens else None
         self.word_emb = nn.Embedding(len(LANG_WORDS), d)
-        self.word_pos = nn.Embedding(y_dim, d)  # y_dim = number of words of a command
+        self.word_pos = nn.Embedding(y_shape[0], d)  # number of words (word pieces) of a command
         self.ep_emb = nn.Embedding(args.k, d)
         self.pos_emb = nn.Embedding(args.num_steps // args.ctx_stride + 1, d)
         self.type_emb = nn.Embedding(4, d)  # 0 null, 1 step, 2 feedback, 3 hint
@@ -148,6 +163,8 @@ class ICLPolicy(nn.Module):
         s = s.reshape(-1, s.shape[-1])
         self.s_mean.copy_(s.mean(0))
         self.s_std.copy_(s.std(0).clamp_min(1e-3))
+        if self.lm_tokens:  # frozen LM features: no normalisation (a LayerNorm in the input projection instead)
+            return
         y = y.reshape(-1, y.shape[-1])
         self.y_mean.copy_(y.mean(0))
         self.y_std.copy_(y.std(0).clamp_min(1e-3))
@@ -164,7 +181,11 @@ class ICLPolicy(nn.Module):
         ep = self.ep_emb(torch.arange(k, device=dev))[None, :, None]  # (1,k,1,d)
         pos = self.pos_emb(torch.arange(Tc, device=dev))[None, None]  # (1,1,Tc,d)
         step_tok = self.step_in(x) + ep + pos + self.type_emb.weight[1]
-        if self.lang:  # (B,k,L) word ids -> L word tokens per episode; pad words are masked
+        if self.lm_tokens:  # (B,k,L,D+1) LM features + mask -> L tokens per episode
+            f = ctx_y.float()
+            y_tok = self.y_in(self.y_ln(f[..., :-1])) + self.word_pos(torch.arange(f.shape[2], device=dev))[None, None] + ep + self.type_emb.weight[2]
+            y_valid = f[..., -1] > 0.5
+        elif self.lang:  # (B,k,L) word ids -> L word tokens per episode; pad words are masked
             ids = ctx_y.long()
             y_tok = self.word_emb(ids) + self.word_pos(torch.arange(ids.shape[-1], device=dev))[None, None] + ep + self.type_emb.weight[2]
             y_valid = ids > 0
@@ -274,7 +295,8 @@ def new_ctx(args, N, S, A, y_dim, device):
     m = args.n_hints if args.feedback == "hints" else 0
     Tc = len(range(args.ctx_stride - 1, args.num_steps, args.ctx_stride)) + (0 if (args.num_steps % args.ctx_stride == 0) else 1)
     return dict(
-        steps=torch.zeros(N, args.k, Tc, S + A, device=device), y=torch.zeros(N, args.k, y_dim, device=device),
+        steps=torch.zeros(N, args.k, Tc, S + A, device=device),
+        y=torch.zeros(N, args.k, *(y_dim if isinstance(y_dim, tuple) else (y_dim,)), device=device, dtype=torch.half if isinstance(y_dim, tuple) else torch.float),
         valid=torch.zeros(N, args.k, Tc, dtype=torch.bool, device=device),
         hints=torch.zeros(N, args.k, m, S + A, device=device), hint_valid=torch.zeros(N, args.k, m, dtype=torch.bool, device=device),
         n=torch.zeros(N, dtype=torch.long, device=device),
@@ -360,10 +382,16 @@ def collect_scripted_episodes(venv, expert, policy, args, goals, seed, student_m
 
 def main():
     args = tyro.cli(Args)
-    global TASK, TEXT_ENC
+    global TASK, TEXT_ENC, TOK_ENC
     kwargs = {"PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole, full_info=args.full_info)}
     TASK = TASKS[args.env_id](**kwargs.get(args.env_id, {}))
     device = torch.device("cuda")
+    if args.feedback == "language_tokens":
+        from transformers import AutoTokenizer, T5EncoderModel
+
+        TOK_ENC = (AutoTokenizer.from_pretrained(args.token_encoder), T5EncoderModel.from_pretrained(args.token_encoder).to(device).eval())
+        for q in TOK_ENC[1].parameters():
+            q.requires_grad_(False)
     if args.feedback == "language_pretrained":
         from sentence_transformers import SentenceTransformer
 
