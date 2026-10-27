@@ -39,11 +39,12 @@ import mani_skill.envs  # noqa: F401  (registers PushTGoal-v1)
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
-from icl_tasks import LANG_WORDS, TASKS, PushTTask, yaw_of_quat
+from icl_tasks import LANG_WORDS, TASKS, PushTTask, command_text, yaw_of_quat
 from ppo import Agent
 from run_logging import LOG_ROOT, RunDir
 
 TASK = PushTTask()
+TEXT_ENC = None  # frozen sentence encoder for --feedback language_pretrained
 CTX_POLS = []  # policies that roll out the context episodes (--ctx-policies), in the order listed
 
 
@@ -72,7 +73,9 @@ class Args:
     feedback: str = "final_error"
     """final_error: the task's privileged final-state error (see icl_tasks.py); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
     at the steps where the student's action differed most from the expert's; language (PegTask): the final error as a templated text command, e.g.
-    "move the peg 4.2 cm forward and 1.5 cm right and 0.3 cm down then turn it 12 degrees clockwise", fed to the student as word tokens"""
+    "move the peg 4.2 cm forward and 1.5 cm right and 0.3 cm down then turn it 12 degrees clockwise", fed to the student as word tokens; language_pretrained: the same command embedded by a frozen sentence encoder (--text-encoder), one feedback token"""
+    text_encoder: str = "sentence-transformers/all-MiniLM-L6-v2"
+    """--feedback language_pretrained: frozen sentence-transformers model that embeds the command text into the feedback token"""
     n_hints: int = 5
     """number of hint steps per episode (--feedback hints)"""
     d_model: int = 128
@@ -96,7 +99,8 @@ def student_obs(obs):
 
 
 def feedback_dim(args):
-    return {"final_error": lambda: TASK.y_dim, "success": lambda: 1, "hints": lambda: 1, "language": lambda: TASK.lang_len}[args.feedback]()
+    return {"final_error": lambda: TASK.y_dim, "success": lambda: 1, "hints": lambda: 1, "language": lambda: TASK.lang_len,
+            "language_pretrained": lambda: TEXT_ENC.get_sentence_embedding_dimension()}[args.feedback]()
 
 
 def feedback_from_obs(obs, kind, success=None):
@@ -105,6 +109,8 @@ def feedback_from_obs(obs, kind, success=None):
         return success.float()[:, None]
     if kind == "language":
         return TASK.language(obs).float()  # word ids (0 = pad), stored in the float feedback buffers
+    if kind == "language_pretrained":
+        return TEXT_ENC.encode(command_text(TASK.language(obs)), convert_to_tensor=True, show_progress_bar=False).clone()
     return TASK.final_error(obs)
 
 
@@ -352,10 +358,14 @@ def collect_scripted_episodes(venv, expert, policy, args, goals, seed, student_m
 
 def main():
     args = tyro.cli(Args)
-    global TASK
+    global TASK, TEXT_ENC
     kwargs = {"PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole, full_info=args.full_info)}
     TASK = TASKS[args.env_id](**kwargs.get(args.env_id, {}))
     device = torch.device("cuda")
+    if args.feedback == "language_pretrained":
+        from sentence_transformers import SentenceTransformer
+
+        TEXT_ENC = SentenceTransformer(args.text_encoder, device=str(device)).eval()
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)
     torch.manual_seed(args.seed)
 

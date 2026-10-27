@@ -4,6 +4,7 @@
 # Run dir: runs/icl-<NAME>. Env knobs read by the task envs (ROT_AXES, PICK_CUBE_OBS_BIAS, PUSHT_GOAL_POS_RANGE, ...) are passed through --export, e.g.
 #   PushTGoal-v1: ENV_ID=PushTGoal-v1,STEPS=100,PUSHT_GOAL_POS_RANGE=0.03,PUSHT_GOAL_YAW_DEG=45     PickCubeBias-v1: STEPS=50,PICK_CUBE_OBS_BIAS=0.05
 #   PegInsertionSideBias-v1: STEPS=100,EXTRA=--hide-hole                                             RotateDirHidden-v1: STEPS=200,ROT_AXES=xyz
+# FB=language / language_pretrained (PegInsertionSideBias-v1): templated text command as feedback (word tokens from scratch / frozen sentence encoder; HF cache below).
 # Note: sbatch --export splits on commas, so list-valued args (--ctx-policies) must use ':' as the separator.
 #SBATCH --partition=gpu-l40
 #SBATCH --account=gpu-l40-weirdlab
@@ -13,6 +14,7 @@
 #SBATCH --time=08:00:00
 #SBATCH --output=/mmfs1/gscratch/weirdlab/will/ManiSkill/logs/slurm/%x-%j.out
 source /mmfs1/gscratch/weirdlab/will/venvs/maniskill/bin/activate
+export HF_HOME=/mmfs1/gscratch/weirdlab/will/hf_cache HF_HUB_OFFLINE=1
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 cd /mmfs1/gscratch/weirdlab/will/ManiSkill/examples/baselines/ppo
 python -u icl_episodic.py --exp-name "${NAME}" --env-id "${ENV_ID}" --feedback "${FB:-final_error}" --expert-checkpoint "${EXPERT}" \

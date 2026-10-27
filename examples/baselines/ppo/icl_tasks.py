@@ -146,6 +146,29 @@ def command_tokens(delta, dyaw, gen=None):
     return torch.cat([toks, torch.zeros(n, LANG_LEN - toks.shape[1], dtype=toks.dtype, device=dev)], 1)
 
 
+def command_text(ids):
+    """Word ids (n, LANG_LEN) -> natural strings, digits joined ("4.2 cm", "12 degrees"), for text encoders."""
+    return [_join_digits(row) for row in ids.tolist()]
+
+
+def _join_digits(row):
+    words, num = [], ""
+    for i in row:
+        w = LANG_WORDS[i]
+        if i == 0:
+            continue
+        if w.isdigit() or w == ".":
+            num += w
+        else:
+            if num:
+                words.append(num)
+                num = ""
+            words.append(w)
+    if num:
+        words.append(num)
+    return " ".join(words)
+
+
 def decode_command(ids):
     return " ".join(LANG_WORDS[i] for i in ids.tolist() if i > 0).replace(" . ", ".")
 
