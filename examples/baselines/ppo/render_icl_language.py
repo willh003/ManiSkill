@@ -32,21 +32,25 @@ class Cfg:
     expert: str = str(LOG_ROOT / "runs/peg-expert-r1/ckpt_3576.pt")
     out: str = "peg_language.mp4"
     """written to logs/renders/icl-peg/videos/"""
-    n: int = 4
-    w: int = 480
-    h: int = 360
+    n: int = 2
+    w: int = 640
+    h: int = 480
     fps: int = 15
 
 
-def text_bar(w, h, lines, color, size=15):
+def text_bar(w, h, lines, color, size=15, size2=None):
     img = Image.new("RGB", (w, h), (24, 24, 27))
     d = ImageDraw.Draw(img)
     try:
         font = ImageFont.truetype("DejaVuSans.ttf", size)
     except OSError:
         font = ImageFont.load_default()
+    big = ImageFont.truetype("DejaVuSans-Bold.ttf", size2) if size2 else font
+    y = 6
     for i, (t, c) in enumerate(lines):
-        d.text((8, 4 + i * (size + 3)), t, fill=c, font=font)
+        f = font if i == 0 else big
+        d.text((8, y), t, fill=c, font=f)
+        y += (size + 8) if i == 0 else (size2 or size) + 6
     return np.asarray(img)
 
 
@@ -137,13 +141,11 @@ def main():
                 ok = succ[h][t][j]
                 tag = "SUCCESS" if ok else ""
                 col = (110, 220, 140) if ok else (235, 235, 235)
-                if h == 0:
-                    head = text_bar(W, 34, [(f"task {j} | h=0 (no feedback)  {tag}", col)], col)
-                    foot = text_bar(W, 0 + 6, [], col)
-                else:
-                    wrapped = textwrap.wrap("Feedback: " + cmds2[e], 54)[:3]
-                    head = text_bar(W, 34, [(f"task {j} | h=1 (after the command)  {tag}", col)], col)
-                    foot = text_bar(W, 4 + 18 * 3, [(w_, (255, 214, 102)) for w_ in wrapped], col)
+                lines = [(f"task {j} | h={h} {'(no feedback)' if h == 0 else '(after the command)'}  {tag}", col)]
+                if h == 1:  # the command goes on top, large, so it stays visible above a player's progress bar
+                    lines += [(w_, (255, 214, 102)) for w_ in textwrap.wrap(cmds2[e], cfg.w // 16)[:3]]
+                head = text_bar(W, 34 + 3 * 32, lines, col, size=18, size2=26)
+                foot = text_bar(W, 0, [], col)
                 cells.append(np.concatenate([head, frames[h][t][j], foot], 0))
             rows.append(np.concatenate(cells, 1))
         hh = max(r.shape[0] for r in rows)
