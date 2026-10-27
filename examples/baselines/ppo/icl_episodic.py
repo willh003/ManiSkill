@@ -208,7 +208,47 @@ class PegTask:
         return err[:, :3].norm(dim=1), torch.zeros(len(err), device=err.device)
 
 
-TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask, "PegInsertionSideBias-v1": PegTask}
+class RotTask:
+    """Hidden signed rotation axis (RotateDirHidden-v1, allegro hand): the task is the true axis (+-x, +-y, +-z), fixed across the task's
+    episodes. The student does not see the axis (obs 83:86) nor the cumulative angle (105); the expert sees the full 106-dim obs.
+    The feedback is [true axis (3), signed cumulative rotation (rad)] at the end of the episode."""
+
+    obs_dim, y_dim = 106, 4
+    DIR = slice(83, 86)
+    CUM = 105
+
+    def __init__(self):
+        self.keep = [i for i in range(106) if not (83 <= i < 86 or i == 105)]
+
+    def sample(self, base, n):
+        return base.dirs.to(base.device)[torch.randint(0, len(base.dirs), (n,), device=base.device)]
+
+    def reset_options(self, tasks):
+        return dict(rot_dir=tasks)
+
+    def student_obs(self, obs):
+        return obs[..., self.keep]
+
+    def expert_obs(self, obs):
+        return obs
+
+    def kin_idx(self):
+        raise NotImplementedError("--ctx-features kin is only defined for PickCubeBias-v1")
+
+    def prior_obs(self, obs, base):
+        """An expert told the first allowed axis (default +z)."""
+        o = obs.clone()
+        o[..., self.DIR] = base.dirs[0].to(obs.device)
+        return o
+
+    def final_error(self, obs):
+        return torch.cat([obs[..., self.DIR], obs[..., self.CUM : self.CUM + 1]], dim=-1)
+
+    def metrics(self, err):
+        return err[:, 3].abs(), torch.zeros(len(err), device=err.device)
+
+
+TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask, "PegInsertionSideBias-v1": PegTask, "RotateDirHidden-v1": RotTask}
 TASK = PushTTask()
 CTX_POLS = []  # policies that roll out the context episodes (--ctx-policies), in the order listed
 
