@@ -25,3 +25,6 @@ Runs: `logs/runs/icl-peg-*` (jobs 42394316-18, 42394226, 42399580-83).
 - Hidden hole + checkpoint episode 0: the success-flag runs go from chance (0.03) to 0.65-0.69 at h=1. The checkpoint's trajectory (acting on the true hole) leaks the hole location, so even 1-bit feedback suffices. Student reaches ~expert level.
 - Caveat: this is therefore not a feedback-driven search; the context is informative through the demo trajectory. Controls (shuf_y/no_y) were reported by the script but not analysed here; ctx-ablated (no_ctx) is the check that matters.
 - Weaker ckpt_926 is slightly worse than ckpt_1226 for success fb (0.65 vs 0.69).
+
+Plot: `logs/renders/icl-peg/peg_ctx.png` (`examples/baselines/ppo/plot_peg_ctx.py`).
+Controls (hidden, ep0 = ckpt, success flag): shuf_y/no_y match normal (~0.70 at h>=1); no_ctx falls to ~0.06, so the ckpt trajectory carries the hole. With final_error, shuf_y/no_y fall to ~0.
