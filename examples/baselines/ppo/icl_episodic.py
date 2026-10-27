@@ -39,7 +39,7 @@ import mani_skill.envs  # noqa: F401  (registers PushTGoal-v1)
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
-from icl_tasks import TASKS, PushTTask, yaw_of_quat
+from icl_tasks import LANG_WORDS, TASKS, PushTTask, yaw_of_quat
 from ppo import Agent
 from run_logging import LOG_ROOT, RunDir
 
@@ -71,7 +71,8 @@ class Args:
     """with --ctx-policies: use an independent random permutation of the listed policies for every task (default: the listed order)"""
     feedback: str = "final_error"
     """final_error: the task's privileged final-state error (see icl_tasks.py); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
-    at the steps where the student's action differed most from the expert's"""
+    at the steps where the student's action differed most from the expert's; language (PegTask): the final error as a templated text command, e.g.
+    "move the peg 4.2 cm forward and 1.5 cm right and 0.3 cm down then turn it 12 degrees clockwise", fed to the student as word tokens"""
     n_hints: int = 5
     """number of hint steps per episode (--feedback hints)"""
     d_model: int = 128
@@ -95,13 +96,15 @@ def student_obs(obs):
 
 
 def feedback_dim(args):
-    return {"final_error": TASK.y_dim, "success": 1, "hints": 1}[args.feedback]
+    return {"final_error": lambda: TASK.y_dim, "success": lambda: 1, "hints": lambda: 1, "language": lambda: TASK.lang_len}[args.feedback]()
 
 
 def feedback_from_obs(obs, kind, success=None):
     """Feedback computed from the (privileged) final observation, which still contains the goal and the T pose."""
     if kind == "success":
         return success.float()[:, None]
+    if kind == "language":
+        return TASK.language(obs).float()  # word ids (0 = pad), stored in the float feedback buffers
     return TASK.final_error(obs)
 
 
@@ -115,7 +118,10 @@ class ICLPolicy(nn.Module):
         self.register_buffer("y_mean", torch.zeros(y_dim))
         self.register_buffer("y_std", torch.ones(y_dim))
         self.step_in = nn.Linear(s_dim + a_dim, d)
+        self.lang = args.feedback == "language"
         self.y_in = nn.Linear(y_dim, d)
+        self.word_emb = nn.Embedding(len(LANG_WORDS), d)
+        self.word_pos = nn.Embedding(y_dim, d)  # y_dim = number of words of a command
         self.ep_emb = nn.Embedding(args.k, d)
         self.pos_emb = nn.Embedding(args.num_steps // args.ctx_stride + 1, d)
         self.type_emb = nn.Embedding(4, d)  # 0 null, 1 step, 2 feedback, 3 hint
@@ -144,7 +150,7 @@ class ICLPolicy(nn.Module):
         """ctx_steps (B, k, Tc, S+A) raw, ctx_y (B, k, Y), n_eps (B,) number of valid past episodes,
         ctx_valid (B, k, Tc) False for steps after the episode terminated, hints (B, k, m, S+A) raw (state, expert action)
         pairs and hint_valid (B, k, m) (m = 0 when there are no hints).
-        Returns memory (B, 1 + k*(Tc+1), d) and a key padding mask (True = ignore)."""
+        Returns memory (B, 1 + k*(Tc+M+m), d), M feedback tokens per episode (1, or the number of words) and a key padding mask (True = ignore)."""
         B, k, Tc, _ = ctx_steps.shape
         dev = ctx_steps.device
         s = (ctx_steps[..., : self.s_mean.shape[0]] - self.s_mean) / self.s_std
@@ -152,13 +158,19 @@ class ICLPolicy(nn.Module):
         ep = self.ep_emb(torch.arange(k, device=dev))[None, :, None]  # (1,k,1,d)
         pos = self.pos_emb(torch.arange(Tc, device=dev))[None, None]  # (1,1,Tc,d)
         step_tok = self.step_in(x) + ep + pos + self.type_emb.weight[1]
-        y_tok = self.y_in((ctx_y - self.y_mean) / self.y_std)[:, :, None] + ep + self.type_emb.weight[2]
+        if self.lang:  # (B,k,L) word ids -> L word tokens per episode; pad words are masked
+            ids = ctx_y.long()
+            y_tok = self.word_emb(ids) + self.word_pos(torch.arange(ids.shape[-1], device=dev))[None, None] + ep + self.type_emb.weight[2]
+            y_valid = ids > 0
+        else:
+            y_tok = self.y_in((ctx_y - self.y_mean) / self.y_std)[:, :, None] + ep + self.type_emb.weight[2]
+            y_valid = torch.ones(B, k, 1, dtype=torch.bool, device=dev)
         h = torch.cat([(hints[..., : self.s_mean.shape[0]] - self.s_mean) / self.s_std, hints[..., self.s_mean.shape[0] :]], dim=-1)
         hint_tok = self.hint_in(h) + ep + self.type_emb.weight[3]
         m = hints.shape[2]
-        tokens = torch.cat([step_tok, y_tok, hint_tok], dim=2).reshape(B, k * (Tc + 1 + m), -1)
+        tokens = torch.cat([step_tok, y_tok, hint_tok], dim=2).reshape(B, k * (Tc + y_tok.shape[2] + m), -1)
         ep_valid = (torch.arange(k, device=dev)[None] < n_eps[:, None])[:, :, None]  # (B,k,1)
-        valid = torch.cat([ctx_valid & ep_valid, ep_valid, hint_valid & ep_valid], dim=2).reshape(B, -1)
+        valid = torch.cat([ctx_valid & ep_valid, y_valid & ep_valid, hint_valid & ep_valid], dim=2).reshape(B, -1)
         null = self.null.expand(B, 1, -1) + self.type_emb.weight[0]
         tokens = torch.cat([null, tokens], dim=1)
         pad = torch.cat([torch.zeros(B, 1, dtype=torch.bool, device=dev), ~valid], dim=1)

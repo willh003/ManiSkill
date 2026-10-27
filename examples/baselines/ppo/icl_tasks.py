@@ -9,6 +9,7 @@ A task class provides
   prior_obs(obs, base)    obs for an "expert told the default task", the best a context-free policy could do
   final_error(obs)        feedback computed from the privileged final obs
   metrics(err)            (position error, yaw error) of a feedback vector, for logging
+  language(obs)           optional (PegTask): templated text command from the privileged final obs, as (n, lang_len) word ids (0 = pad)
 To add a task: write a class here and register it in TASKS.
 """
 import torch
@@ -95,6 +96,60 @@ class PickBiasTask:
         return err[:, :2].norm(dim=1), torch.zeros(len(err), device=err.device)
 
 
+# ---- language feedback (PegTask) ----
+LANG_WORDS = ["<pad>", "move", "shift", "the", "peg", "it", "forward", "backward", "left", "right", "up", "down", "cm", "and", "then", "rotate",
+              "turn", "degrees", "clockwise", "counterclockwise", "."] + [str(i) for i in range(10)]
+W = {w: i for i, w in enumerate(LANG_WORDS)}
+LANG_LEN = 32
+
+
+def _num_tokens(v, decimal):
+    """v: (n,) non-negative ints -> (n, 4) tokens [tens, units, '.', tenth] (decimal; v in 0.1 units) or (n, 2) [tens, units] (v in whole units);
+    the tens token is blanked (-1) when zero so that "4.2" is not written "04.2"."""
+    d0 = W["0"]
+    if decimal:
+        v = v.clamp(0, 999)
+        toks = torch.stack([d0 + v // 100, d0 + (v // 10) % 10, torch.full_like(v, W["."]), d0 + v % 10], 1)
+    else:
+        v = v.clamp(0, 99)
+        toks = torch.stack([d0 + v // 10, d0 + v % 10], 1)
+    toks[:, 0] = torch.where(v >= (100 if decimal else 10), toks[:, 0], torch.full_like(v, -1))
+    return toks
+
+
+def command_tokens(delta, dyaw, gen=None):
+    """Template command for a displacement delta (n,3) [m, world x forward / y left / z up] and a yaw rotation dyaw (n,) [rad, counterclockwise
+    positive], e.g. "move the peg 4.2 cm forward and 1.5 cm right and 0.3 cm down then turn it 12 degrees clockwise" (whole mm, whole degrees).
+    Templates: 3 openers x 6 orders of the axes x 2 rotation verbs. Returns (n, LANG_LEN) word ids, 0 padded."""
+    n, dev = delta.shape[0], delta.device
+    rnd = lambda hi: torch.randint(0, hi, (n,), device=dev, generator=gen)
+    mm = (delta.abs() * 1000).round().long()  # mm = 0.1 cm
+    names = [("forward", "backward"), ("left", "right"), ("up", "down")]
+    blocks = []
+    for a in range(3):
+        word = torch.where(delta[:, a] >= 0, W[names[a][0]], W[names[a][1]])
+        b = torch.cat([_num_tokens(mm[:, a], True), torch.full((n, 1), W["cm"], device=dev), word[:, None]], 1)  # (n, 6)
+        blocks.append(b)
+    blocks = torch.stack(blocks, 1)  # (n, 3, 6)
+    order = torch.rand(n, 3, device=dev, generator=gen).argsort(1)
+    blocks = blocks.gather(1, order[..., None].expand(-1, -1, 6))
+    and_ = torch.full((n, 1), W["and"], device=dev)
+    openers = torch.tensor([[W["move"], W["the"], W["peg"]], [W["shift"], W["the"], W["peg"]], [W["move"], W["it"], 0]], device=dev)[rnd(3)]
+    deg = (dyaw.abs() * 180 / torch.pi).round().long()
+    rot = torch.cat([torch.full((n, 1), W["then"], device=dev), torch.where(rnd(2) == 0, W["rotate"], W["turn"])[:, None],
+                     torch.full((n, 1), W["it"], device=dev), _num_tokens(deg, False), torch.full((n, 1), W["degrees"], device=dev),
+                     torch.where(dyaw >= 0, W["counterclockwise"], W["clockwise"])[:, None]], 1)
+    toks = torch.cat([openers, blocks[:, 0], and_, blocks[:, 1], and_, blocks[:, 2], rot], 1)
+    toks = torch.where(toks < 0, torch.zeros_like(toks), toks)  # blanked tens digits and the 2-word opener's gap -> pad
+    keep = (toks > 0).long()
+    toks = toks.gather(1, (1 - keep).argsort(dim=1, stable=True))  # compact: pads at the end
+    return torch.cat([toks, torch.zeros(n, LANG_LEN - toks.shape[1], dtype=toks.dtype, device=dev)], 1)
+
+
+def decode_command(ids):
+    return " ".join(LANG_WORDS[i] for i in ids.tolist() if i > 0).replace(" . ", ".")
+
+
 class PegTask:
     """Hidden hole pose (PegInsertionSideBias-v1). hide_hole=False: the student sees box_hole_pose shifted by a per-task offset
     (dx, dy, dyaw); hide_hole=True: the student does not see it, and the task is the true box pose (x, y, yaw), fixed across the
@@ -152,6 +207,16 @@ class PegTask:
 
     def metrics(self, err):
         return err[:, :3].norm(dim=1), torch.zeros(len(err), device=err.device)
+
+    lang_len = LANG_LEN
+
+    def language(self, obs):
+        """The final_error information as a command: displacement hole - peg head, and the yaw rotation from the peg to the hole."""
+        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import peg_head_pos
+
+        delta = obs[..., 35:38] - peg_head_pos(obs)
+        dyaw = yaw_of_quat(obs[..., 38:42]) - yaw_of_quat(obs[..., 28:32])
+        return command_tokens(delta, torch.atan2(dyaw.sin(), dyaw.cos()))
 
 
 class RotTask:
