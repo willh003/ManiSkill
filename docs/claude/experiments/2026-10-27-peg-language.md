@@ -21,3 +21,9 @@ Runs `logs/runs/icl-peg-{language,language-pretrained}-hidden-strong` (jobs 4246
 - The frozen sentence encoder is much worse (0.27 -> 0.48): pooled sentence embeddings are dominated by the template wording and barely resolve the
   numbers (cosine of "4.2 cm" vs "4.3 cm" commands ~0.64, vs ~0.72 to a very different command). Pretraining did not help here; it hurts.
 - Not tried: token-level T5-small features, spelled-out numbers, fewer templates, fine-tuning the encoder.
+
+## Training curves and video
+- Curves (eval success_once per DAgger iteration at h=0/1/4, all three runs): `logs/renders/icl-peg/peg_language_curves.png`
+  (`plot_icl.py --hs 0 1 4`). The vector reaches ~0.95 in 5 iterations; from-scratch language needs ~25 and is still rising at 30; MiniLM is slowest and flat-ish.
+- Video: `logs/renders/icl-peg/videos/peg_language.mp4` (`render_icl_language.py`): 4 tasks, h=0 on top (all fail), h=1 below with the h=0 command shown.
+  Tasks are picked among those that fail at h=0 and succeed at h=1 (419/512 eval tasks do), so it shows the typical gain, not the failure cases.

@@ -200,9 +200,9 @@ def ctx_step_index(T, stride, device):
     return idx
 
 
-def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal", pol_idx=None):
+def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal", pol_idx=None, step_cb=None):
     """One episode on every task. mode: 'student' | 'expert' | 'prior_expert' (expert told the default goal) | 'scripted' (CTX_POLS[pol_idx[env]]).
-    ctx: dict(steps (N,k,Tc,S+A), y (N,k,Y), n (N,)) of previous episodes; ctx_mode: normal | shuf_y | no_y | no_ctx.
+    ctx: dict(steps (N,k,Tc,S+A), y (N,k,Y), n (N,)) of previous episodes; step_cb: optional per-step hook; ctx_mode: normal | shuf_y | no_y | no_ctx.
     Returns states, executed actions, expert labels, success flags and the feedback for this episode."""
     device, N, T = venv.device, args.num_envs, args.num_steps
     low = torch.from_numpy(venv.single_action_space.low).to(device)
@@ -247,6 +247,8 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
         s = (infos["final_info"] if "final_info" in infos else infos)["success"].bool()
         y_obs = final if y_obs is None else torch.where(succ_once[:, None], y_obs, final)  # frozen once done
         succ_once |= s
+        if step_cb is not None:  # e.g. video frames: step_cb(t, succ_once)
+            step_cb(t, succ_once)
     err = feedback_from_obs(y_obs, "final_error")
     alive = torch.stack(alive, 1)
     xs_t, acts_t, labels_t = torch.stack(xs, 1), torch.stack(acts, 1), torch.stack(labels, 1)
