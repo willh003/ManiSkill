@@ -2,3 +2,4 @@
 from .rotate_valve import RotateValveEnv
 from .rotate_single_object_in_hand import RotateSingleObjectInHand
 from .insert_flower import InsertFlowerEnv
+from .rotate_dir_hidden import RotateDirHiddenEnv
