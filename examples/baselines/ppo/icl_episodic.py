@@ -1,8 +1,8 @@
-"""Episodic in-context learning on PushTGoal-v1 (hidden goal pose, corrective feedback after each episode).
+"""Episodic in-context learning (a hidden task variable, corrective feedback after each episode).
 
-A "task" is a goal T pose the student cannot observe (the expert can). The student rolls out up to k episodes on the same
-goal; after each episode i it receives feedback y_i, here the privileged final-state error of the T relative to the goal,
-[dx, dy, cos(dyaw), sin(dyaw)]. Context c_h = ((xi_0, y_0), ..., (xi_{h-1}, y_{h-1})). The student is a transformer
+A "task" is a hidden variable the student cannot observe (the expert can); task definitions are in icl_tasks.py (PushTGoal-v1: goal T pose,
+PickCubeBias-v1, PegInsertionSideBias-v1, RotateDirHidden-v1). The student rolls out up to k episodes on the same task;
+after each episode i it receives feedback y_i: the privileged final-state error (task-specific), the success flag, or expert-action hints. Context c_h = ((xi_0, y_0), ..., (xi_{h-1}, y_{h-1})). The student is a transformer
 pi(a | s, c_h): context tokens are subsampled (s, a) steps of past episodes plus one feedback token per episode; each
 current-state query cross-attends to them (a learned null token is always present, so h = 0 works).
 
@@ -20,7 +20,7 @@ Each DAgger iteration:
      success(h) shows whether more context helps. Controls: shuffled feedback, no feedback, no context.
 
 Example:
-    python icl_episodic.py --exp-name icl
+    python icl_episodic.py --exp-name icl --env-id PickCubeBias-v1 --expert-checkpoint <ppo ckpt> --num-steps 50
 """
 import re
 import time
@@ -39,216 +39,10 @@ import mani_skill.envs  # noqa: F401  (registers PushTGoal-v1)
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
+from icl_tasks import TASKS, PushTTask, yaw_of_quat
 from ppo import Agent
 from run_logging import LOG_ROOT, RunDir
 
-# observation layout of PushTGoal-v1 (33 dims): qpos 0:7, qvel 7:14, tcp pose 14:21, goal pos 21:24, goal cos/sin 24:26, T pose 26:33
-GOAL_SLICE = slice(21, 26)
-Y_DIM = 4
-
-
-class PushTTask:
-    """Hidden goal T pose. The student sees the clean obs without the goal entries."""
-
-    obs_dim, y_dim = 33, 4
-
-    def sample(self, base, n):
-        return base.sample_goal_delta(n)
-
-    def reset_options(self, tasks):
-        return dict(goal=tasks)
-
-    def student_obs(self, obs):
-        return torch.cat([obs[..., : GOAL_SLICE.start], obs[..., GOAL_SLICE.stop :]], dim=-1)
-
-    def expert_obs(self, obs):
-        return obs
-
-    def kin_idx(self):
-        raise NotImplementedError("--ctx-features kin is only defined for PickCubeBias-v1")
-
-    def prior_obs(self, obs, base):
-        """Obs for an expert that is told the default goal."""
-        o = obs.clone()
-        o[:, GOAL_SLICE.start : GOAL_SLICE.start + 2] = torch.tensor(base.goal_offset.tolist(), device=obs.device)
-        o[:, 23] = 1e-3
-        o[:, 24] = torch.cos(torch.tensor(base.goal_z_rot, device=obs.device))
-        o[:, 25] = torch.sin(torch.tensor(base.goal_z_rot, device=obs.device))
-        return o
-
-    def final_error(self, obs):
-        """Final T pose relative to the goal, [dx, dy, cos dyaw, sin dyaw]."""
-        dxy = obs[:, 26:28] - obs[:, 21:23]
-        goal_yaw = torch.atan2(obs[:, 25], obs[:, 24])
-        dyaw = yaw_of_quat(obs[:, 29:33]) - goal_yaw
-        return torch.cat([dxy, dyaw.cos()[:, None], dyaw.sin()[:, None]], dim=1)
-
-    def metrics(self, err):
-        return err[:, :2].norm(dim=1), torch.atan2(err[:, 3], err[:, 2]).abs()
-
-
-class PickBiasTask:
-    """Hidden xy bias between the observed and the true cube position (PickCubeBias-v1). The student sees the biased cube
-    entries; the expert sees the clean obs. The feedback is the true tcp -> cube vector at the end of the episode."""
-
-    obs_dim, y_dim = 45, 3
-
-    def __init__(self, hide_grasp="none", hide_cube=False):
-        self.hide_cube = hide_cube
-        # dims removed from the student's obs: the is_grasped flag (18), plus the finger joints that also reveal a grasp (qpos 7:9, qvel 16:18)
-        drop = {"none": [], "flag": [18], "fingers": [7, 8, 16, 17, 18]}[hide_grasp]
-        if hide_cube:  # the student gets no cube information at all: obj_pose 29:36, tcp_to_obj_pos 36:39, obj_to_goal_pos 39:42
-            drop = drop + list(range(29, 42))
-        self.keep = [i for i in range(42) if i not in drop]
-
-    def sample(self, base, n):
-        o = torch.zeros(n, 3, device=base.device)
-        if self.hide_cube:  # the task is a hidden cube xy, fixed across the task's episodes
-            o[:, :2] = (torch.rand(n, 2, device=base.device) * 2 - 1) * base.cube_spawn_half_size
-            o[:, :2] += torch.tensor(base.cube_spawn_center, device=base.device)
-            return o
-        o[:, :2] = (torch.rand(n, 2, device=base.device) * 2 - 1) * base.bias_range
-        return o
-
-    def reset_options(self, tasks):
-        if self.hide_cube:
-            return dict(cube_xy=tasks[:, :2], offset=torch.zeros_like(tasks))
-        return dict(offset=tasks)
-
-    def student_obs(self, obs):
-        from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
-
-        return observed_cube_obs(obs)[..., self.keep]
-
-    def expert_obs(self, obs):
-        return obs[..., :42]
-
-    def kin_idx(self):
-        """Student-obs positions of tcp pose (19:26) and the observed cube xyz (29:32)."""
-        return [self.keep.index(i) for i in list(range(19, 26)) + [29, 30, 31]]
-
-    def prior_obs(self, obs, base):
-        """An expert that assumes there is no bias acts on the biased observation."""
-        from mani_skill.envs.tasks.tabletop.pick_cube_bias import observed_cube_obs
-
-        if self.hide_cube:  # an expert told the cube is at the table centre
-            o = obs[..., :42].clone()
-            cube = torch.tensor([0.0, 0.0, 0.02], device=obs.device)
-            o[..., 29:32] = cube
-            o[..., 36:39] = cube - o[..., 19:22]
-            o[..., 39:42] = o[..., 26:29] - cube
-            return o
-        return observed_cube_obs(obs)
-
-    def final_error(self, obs):
-        return obs[:, 36:39]
-
-    def metrics(self, err):
-        return err[:, :2].norm(dim=1), torch.zeros(len(err), device=err.device)
-
-
-class PegTask:
-    """Hidden hole pose (PegInsertionSideBias-v1). hide_hole=False: the student sees box_hole_pose shifted by a per-task offset
-    (dx, dy, dyaw); hide_hole=True: the student does not see it, and the task is the true box pose (x, y, yaw), fixed across the
-    task's episodes. The expert sees the clean obs. The feedback is the true hole pose relative to the final peg head:
-    [hole - head (world frame, 3), head (3), cos(hole yaw), sin(hole yaw)], so the hole pose is a function of the token."""
-
-    obs_dim, y_dim = 46, 8
-
-    def __init__(self, hide_hole=False, full_info=False):
-        self.hide_hole = hide_hole
-        self.full_info = full_info  # the student sees the true hole pose; the task is still a fixed box pose per task
-        self.keep = [i for i in range(42) if not (hide_hole and 35 <= i < 42)]  # 42 = hole radius = peg radius + 3 mm: redundant
-
-    def sample(self, base, n):
-        from mani_skill.envs.tasks.tabletop import peg_insertion_side_bias as pb
-
-        d = base.device
-        if self.hide_hole or self.full_info:
-            lo = torch.tensor([*pb.BOX_XY_LOW, pb.BOX_YAW_LOW], device=d)
-            hi = torch.tensor([*pb.BOX_XY_HIGH, pb.BOX_YAW_HIGH], device=d)
-            return lo + (hi - lo) * torch.rand(n, 3, device=d)
-        return (torch.rand(n, 3, device=d) * 2 - 1) * torch.tensor([base.bias_xy, base.bias_xy, base.bias_yaw], device=d)
-
-    def reset_options(self, tasks):
-        if self.hide_hole or self.full_info:
-            return dict(box_pose=tasks, offset=torch.zeros_like(tasks))
-        return dict(offset=tasks)
-
-    def student_obs(self, obs):
-        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import observed_hole_obs
-
-        return observed_hole_obs(obs)[..., self.keep]
-
-    def expert_obs(self, obs):
-        return obs[..., :43]
-
-    def kin_idx(self):
-        raise NotImplementedError("--ctx-features kin is only defined for PickCubeBias-v1")
-
-    def prior_obs(self, obs, base):
-        """Hidden: an expert told the hole is at the default box pose (true height). Biased: an expert that assumes there is no bias."""
-        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import observed_hole_obs
-
-        o = observed_hole_obs(obs)
-        if self.hide_hole:
-            o = obs[..., :43].clone()
-            o[..., 35:37] = torch.tensor([0.0, 0.3], device=obs.device)
-            o[..., 38:42] = torch.tensor([0.7071, 0.0, 0.0, 0.7071], device=obs.device)
-        return o
-
-    def final_error(self, obs):
-        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import peg_head_pos
-
-        head = peg_head_pos(obs)
-        yaw = yaw_of_quat(obs[..., 38:42])
-        return torch.cat([obs[..., 35:38] - head, head, yaw.cos()[..., None], yaw.sin()[..., None]], dim=-1)
-
-    def metrics(self, err):
-        return err[:, :3].norm(dim=1), torch.zeros(len(err), device=err.device)
-
-
-class RotTask:
-    """Hidden signed rotation axis (RotateDirHidden-v1, allegro hand): the task is the true axis (+-x, +-y, +-z), fixed across the task's
-    episodes. The student does not see the axis (obs 83:86) nor the cumulative angle (105); the expert sees the full 106-dim obs.
-    The feedback is [true axis (3), signed cumulative rotation (rad)] at the end of the episode."""
-
-    obs_dim, y_dim = 106, 4
-    DIR = slice(83, 86)
-    CUM = 105
-
-    def __init__(self):
-        self.keep = [i for i in range(106) if not (83 <= i < 86 or i == 105)]
-
-    def sample(self, base, n):
-        return base.dirs.to(base.device)[torch.randint(0, len(base.dirs), (n,), device=base.device)]
-
-    def reset_options(self, tasks):
-        return dict(rot_dir=tasks)
-
-    def student_obs(self, obs):
-        return obs[..., self.keep]
-
-    def expert_obs(self, obs):
-        return obs
-
-    def kin_idx(self):
-        raise NotImplementedError("--ctx-features kin is only defined for PickCubeBias-v1")
-
-    def prior_obs(self, obs, base):
-        """An expert told the first allowed axis (default +z)."""
-        o = obs.clone()
-        o[..., self.DIR] = base.dirs[0].to(obs.device)
-        return o
-
-    def final_error(self, obs):
-        return torch.cat([obs[..., self.DIR], obs[..., self.CUM : self.CUM + 1]], dim=-1)
-
-    def metrics(self, err):
-        return err[:, 3].abs(), torch.zeros(len(err), device=err.device)
-
-
-TASKS = {"PushTGoal-v1": PushTTask, "PickCubeBias-v1": PickBiasTask, "PegInsertionSideBias-v1": PegTask, "RotateDirHidden-v1": RotTask}
 TASK = PushTTask()
 CTX_POLS = []  # policies that roll out the context episodes (--ctx-policies), in the order listed
 
@@ -266,8 +60,6 @@ class Args:
     k: int = 4
     """student episodes per task, i.e. context lengths h = 0..k"""
     num_iterations: int = 20
-    hide_cube: bool = False
-    """PickCubeBias only: the student gets no cube observation, and the task is the cube xy (fixed across a task's episodes)"""
     hide_hole: bool = False
     """PegInsertionSideBias only: the student gets no hole pose, and the task is the box pose (x, y, yaw) (else: biased observed hole pose)"""
     full_info: bool = False
@@ -277,14 +69,8 @@ class Args:
     task are rolled out (deterministically) by these instead of by the student; the remaining episodes are the student's own"""
     ctx_random_order: bool = False
     """with --ctx-policies: use an independent random permutation of the listed policies for every task (default: the listed order)"""
-    hide_grasp: str = "none"
-    """PickCubeBias only: none | flag (drop is_grasped from the student obs) | fingers (also drop the finger joint qpos/qvel)"""
-    ctx_features: str = "all"
-    """features of the context (past-episode) steps: all | kin (PickCubeBias only: tcp pose + observed cube xyz, no joints/velocities/actions).
-    The current-state query always sees the full obs."""
     feedback: str = "final_error"
-    """final_error: [dx, dy, cos dyaw, sin dyaw] of the final T vs the goal; iou: scalar overlap of the final T with the goal
-    (0..1); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
+    """final_error: the task's privileged final-state error (see icl_tasks.py); success: the 0/1 success flag; hints: no outcome feedback, instead n_hints (state, expert action) pairs per episode
     at the steps where the student's action differed most from the expert's"""
     n_hints: int = 5
     """number of hint steps per episode (--feedback hints)"""
@@ -308,12 +94,8 @@ def student_obs(obs):
     return TASK.student_obs(obs)
 
 
-def yaw_of_quat(q):
-    return 2 * torch.atan2(q[..., 3], q[..., 0])
-
-
 def feedback_dim(args):
-    return {"final_error": TASK.y_dim, "iou": 1, "success": 1, "hints": 1, "final_error_tcp": 6, "init_error_tcp": 6}[args.feedback]
+    return {"final_error": TASK.y_dim, "success": 1, "hints": 1}[args.feedback]
 
 
 def feedback_from_obs(obs, kind, success=None):
@@ -333,11 +115,6 @@ class ICLPolicy(nn.Module):
         self.register_buffer("y_mean", torch.zeros(y_dim))
         self.register_buffer("y_std", torch.ones(y_dim))
         self.step_in = nn.Linear(s_dim + a_dim, d)
-        ctx_mask = torch.ones(s_dim + a_dim)
-        if args.ctx_features == "kin":
-            ctx_mask.zero_()
-            ctx_mask[TASK.kin_idx()] = 1.0
-        self.register_buffer("ctx_mask", ctx_mask, persistent=False)  # zeroes the context step features that are not used
         self.y_in = nn.Linear(y_dim, d)
         self.ep_emb = nn.Embedding(args.k, d)
         self.pos_emb = nn.Embedding(args.num_steps // args.ctx_stride + 1, d)
@@ -371,7 +148,7 @@ class ICLPolicy(nn.Module):
         B, k, Tc, _ = ctx_steps.shape
         dev = ctx_steps.device
         s = (ctx_steps[..., : self.s_mean.shape[0]] - self.s_mean) / self.s_std
-        x = torch.cat([s, ctx_steps[..., self.s_mean.shape[0] :]], dim=-1) * self.ctx_mask
+        x = torch.cat([s, ctx_steps[..., self.s_mean.shape[0] :]], dim=-1)
         ep = self.ep_emb(torch.arange(k, device=dev))[None, :, None]  # (1,k,1,d)
         pos = self.pos_emb(torch.arange(Tc, device=dev))[None, None]  # (1,1,Tc,d)
         step_tok = self.step_in(x) + ep + pos + self.type_emb.weight[1]
@@ -413,7 +190,6 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     low = torch.from_numpy(venv.single_action_space.low).to(device)
     high = torch.from_numpy(venv.single_action_space.high).to(device)
     obs, _ = venv.reset(seed=seed, options=TASK.reset_options(goals))
-    obs0 = obs.clone()  # clean obs at the start of the episode (PickCubeBias: includes the true cube position)
     if mode == "student":
         n, cy, ch, chv = ctx["n"], ctx["y"], ctx["hints"], ctx["hint_valid"]
         if ctx_mode == "shuf_y":  # feedback (and hints) of another task
@@ -428,7 +204,6 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
     xs, acts, labels, alive = [], [], [], []
     succ_once = torch.zeros(N, dtype=torch.bool, device=device)  # also "done": the episode terminates at the first success
     y_obs = None  # observation at the termination step (the last step if it never succeeds)
-    iou = None  # overlap at the termination step; the env auto-resets on the last step, so there it reuses the previous value
     base = venv.unwrapped
     for t in range(T):
         with torch.no_grad():
@@ -453,24 +228,12 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
         final = infos["final_observation"] if "final_observation" in infos else obs
         s = (infos["final_info"] if "final_info" in infos else infos)["success"].bool()
         y_obs = final if y_obs is None else torch.where(succ_once[:, None], y_obs, final)  # frozen once done
-        if args.feedback == "iou":
-            assert isinstance(TASK, PushTTask), "iou feedback is only defined for PushT"
-            cur = base.pseudo_render_intersection() if t < T - 1 else (torch.maximum(iou, torch.full_like(iou, 0.9)) * s + iou * ~s)
-            iou = cur if iou is None else torch.where(succ_once, iou, cur)
         succ_once |= s
     err = feedback_from_obs(y_obs, "final_error")
     alive = torch.stack(alive, 1)
     xs_t, acts_t, labels_t = torch.stack(xs, 1), torch.stack(acts, 1), torch.stack(labels, 1)
     m = args.n_hints if args.feedback == "hints" else 0
-    if args.feedback == "iou":
-        y = iou[:, None]
-    elif args.feedback in ("final_error_tcp", "init_error_tcp"):
-        # PickCubeBias only. [cube - tcp, tcp] at the termination step, so the absolute cube position is a linear function of the token.
-        # init_error_tcp uses the cube position at the start of the episode (the hidden task variable) instead of its final position.
-        tcp = y_obs[:, 19:22]
-        vec = y_obs[:, 36:39] if args.feedback == "final_error_tcp" else (obs0[:, 29:32] - obs0[:, 42:45]) - tcp
-        y = torch.cat([vec, tcp], dim=1)
-    elif args.feedback == "hints":
+    if args.feedback == "hints":
         y = torch.zeros(N, 1, device=device)  # constant token: no outcome feedback
     else:
         y = feedback_from_obs(y_obs, args.feedback, succ_once)
@@ -578,7 +341,7 @@ def collect_scripted_episodes(venv, expert, policy, args, goals, seed, student_m
 def main():
     args = tyro.cli(Args)
     global TASK
-    kwargs = {"PickCubeBias-v1": dict(hide_grasp=args.hide_grasp, hide_cube=args.hide_cube), "PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole, full_info=args.full_info)}
+    kwargs = {"PegInsertionSideBias-v1": dict(hide_hole=args.hide_hole, full_info=args.full_info)}
     TASK = TASKS[args.env_id](**kwargs.get(args.env_id, {}))
     device = torch.device("cuda")
     run = RunDir(args.out_dir or str(LOG_ROOT / "runs" / f"icl-{args.exp_name}"), args)

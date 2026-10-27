@@ -1,0 +1,8 @@
+# ICL student code layout (`examples/baselines/ppo/`)
+
+- `icl_tasks.py`: one class per hidden-variable task (`PushTTask`, `PickBiasTask`, `PegTask`, `RotTask`; registry `TASKS`). The interface is in the module docstring: `sample`, `reset_options`, `student_obs`, `expert_obs`, `prior_obs`, `final_error`, `metrics`. Add a task by writing a class and registering it.
+- `icl_episodic.py`: DAgger loop, transformer student (`ICLPolicy`), `rollout` (modes expert / prior_expert / scripted / student), `collect_task_episodes`, `collect_scripted_episodes` (`--ctx-policies`: first m episodes by PPO checkpoints), eval + controls (`shuf_y`, `no_y`, `no_ctx`). Feedback kinds: `final_error`, `success`, `hints`.
+- `run_logging.py`: run dir layout (`logs/runs/<name>/`: config, metrics.jsonl, results.json, checkpoints, tb).
+- `plot_icl.py`: success_once vs h for any set of `icl-*` runs, optional controls panel. `plot_ppo_curves.py`: PPO eval curves from tensorboard.
+- `ppo.py`, `ppo_fast.py`: expert training (same Agent state dict). `slurm/expert_*.sbatch`: expert recipes; `slurm/icl.sbatch`: generic student job (usage in its header).
+- Envs: `mani_skill/envs/tasks/tabletop/{push_t_goal,pick_cube_bias,peg_insertion_side_bias}.py`, `dexterity/rotate_dir_hidden.py` (the allegro expert did not learn yet, see the rotation attempt in the experiments).
