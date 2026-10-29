@@ -223,7 +223,7 @@ def ctx_step_index(T, stride, device):
 
 def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal", pol_idx=None, step_cb=None):
     """One episode on every task. mode: 'student' | 'expert' | 'prior_expert' (expert told the default goal) | 'scripted' (CTX_POLS[pol_idx[env]]).
-    ctx: dict(steps (N,k,Tc,S+A), y (N,k,Y), n (N,)) of previous episodes; step_cb: optional per-step hook; ctx_mode: normal | shuf_y | no_y | no_ctx.
+    ctx: dict(steps (N,k,Tc,S+A), y (N,k,Y), n (N,)) of previous episodes; step_cb: optional per-step hook; ctx_mode: normal | shuf_y | no_y | rand_y (language only) | no_ctx.
     Returns states, executed actions, expert labels, success flags and the feedback for this episode."""
     device, N, T = venv.device, args.num_envs, args.num_steps
     low = torch.from_numpy(venv.single_action_space.low).to(device)
@@ -236,6 +236,8 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
             cy, ch, chv = cy[perm], ch[perm], chv[perm]
         elif ctx_mode == "no_y":  # keep the student's own episodes, drop all feedback
             cy, chv = torch.zeros_like(cy), torch.zeros_like(chv)
+        elif ctx_mode == "rand_y":  # language ablation: random well-formed commands instead of the true ones (the student's episodes are kept)
+            cy = TASK.random_language(cy.shape[:2], device).to(cy.dtype)
         elif ctx_mode == "no_ctx":
             n = torch.zeros_like(n)
         with torch.no_grad():

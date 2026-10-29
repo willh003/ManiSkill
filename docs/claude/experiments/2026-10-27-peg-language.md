@@ -37,3 +37,21 @@ Runs `logs/runs/icl-peg-{language,language-pretrained,language-tokens}-hidden-st
 - Learning curves: T5 tokens track from-scratch tokens through iteration 15 and are still rising at 30 (h1 ~0.8), so neither is converged.
   Controls (shuffled / no feedback / no context) are at chance.
 - Caveat: the commands still come from the 36-template generator; this removes the custom vocabulary, not the templates.
+
+## Eval ablation on the from-scratch language student (`eval_icl_ablation.py`, 3 eval seeds x 512 fresh tasks)
+Trained student `icl-peg-language-hidden-strong` (policy_final.pt), eval-only. Results: `logs/runs/icl-peg-language-hidden-strong/ablation.json`, plot
+`logs/renders/icl-peg/peg_language_ablation.png`. success_once, mean (std) over seeds, h = previous episodes in context:
+
+| eval condition | h0 | h1 | h2 | h3 | h4 |
+|---|---|---|---|---|---|
+| true commands | .05 | .85 (.01) | .89 | .89 | .90 |
+| no language (command blanked, student's own trajectory kept) | .06 | .03 | .03 | .02 | .02 |
+| random language (random well-formed commands, uniform in the range of real ones) | .06 | .00 | .00 | .00 | .00 |
+| another task's command (shuffled) | .06 | .02 | .01 | .01 | .01 |
+| no context at all | .06 | .06 | .08 | .07 | .07 |
+
+- The student uses the command: removing it drops h>=1 from ~0.85-0.90 to 0.02-0.03, below the no-context level (0.06-0.08). A context with trajectory but
+  no instruction is out of distribution and is worse than no context.
+- Random commands are worse than none (0.00): the student acts on the false displacement, so it follows the text rather than ignoring it. Another task's
+  real command gives 0.01-0.02, same story.
+- `rand_y` is new in `icl_episodic.py` (`PegTask.random_language`, range from the real commands seen in the first eval).

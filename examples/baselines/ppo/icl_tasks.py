@@ -239,7 +239,19 @@ class PegTask:
 
         delta = obs[..., 35:38] - peg_head_pos(obs)
         dyaw = yaw_of_quat(obs[..., 38:42]) - yaw_of_quat(obs[..., 28:32])
-        return command_tokens(delta, torch.atan2(dyaw.sin(), dyaw.cos()))
+        dyaw = torch.atan2(dyaw.sin(), dyaw.cos())
+        v = torch.cat([delta, dyaw[..., None]], -1).reshape(-1, 4)  # running range of the real commands, for random_language
+        lo, hi = v.min(0).values, v.max(0).values
+        self.cmd_range = (lo, hi) if self.cmd_range is None else (torch.minimum(self.cmd_range[0], lo), torch.maximum(self.cmd_range[1], hi))
+        return command_tokens(delta, dyaw)
+
+    cmd_range = None
+
+    def random_language(self, shape, device):
+        """Commands with a uniformly random displacement / yaw inside the range of the real commands seen so far (eval ablation)."""
+        lo, hi = (r.to(device) for r in self.cmd_range)
+        v = lo + (hi - lo) * torch.rand(int(torch.tensor(shape).prod()), 4, device=device)
+        return command_tokens(v[:, :3], v[:, 3]).reshape(*shape, -1)
 
 
 class RotTask:
