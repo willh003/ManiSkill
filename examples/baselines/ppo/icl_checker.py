@@ -61,6 +61,13 @@ class Args:
     eval_seed: int = 12345
     split: str = "checker"
     """hold-out split name (icl_tasks.SPLITS); white = train region, black = test region"""
+    finetune_ckpt: str = ""
+    """fine-tune this policy_final.pt on held-out (black) demos instead of training from scratch (--mode must match how it was trained)"""
+    ft_sizes: str = "10,50,200"
+    """numbers of black demos to fine-tune on (nested: the first n goals of one fixed set where the expert succeeds)"""
+    ft_steps: int = 1000
+    ft_lr: float = 1e-4
+    ft_batch: int = 64
     eval_envs_only: bool = False
     """only evaluate the expert references and exit (smoke test)"""
 
@@ -223,6 +230,33 @@ def train(policy, opt, sched, D, args, icl):
     return sum(losses[-100:]) / 100
 
 
+def finetune(policy, base_state, args, icl, obs, lab, alive, ctx):
+    """Reset `policy` to base_state and fine-tune on n demos. obs/lab/alive: expert demos (n, T, ...) on black goals with the true pose. icl: ctx = failure
+    attempt (n, Tc, ...) with per-step feedback (the improvement trace: context -> expert success); each step uses the context with prob 0.5 (else h=0, as in
+    pretraining) and the pose dropout of pretraining. bc: no context, no masking."""
+    policy.load_state_dict(base_state)
+    policy.train()
+    opt = torch.optim.Adam(policy.parameters(), lr=args.ft_lr)
+    n, B, device = obs.shape[0], args.ft_batch, obs.device
+    for _ in range(args.ft_steps):
+        idx = torch.randint(0, n, (B,), device=device)
+        q, y, m = obs[idx], lab[idx], alive[idx].float()
+        if icl:
+            drop = torch.rand(B, device=device) < args.pose_dropout
+            use = torch.rand(B, device=device) < 0.5
+            q, cs = apply_mask(q, drop), apply_mask(ctx["s"][idx], drop)
+            memory, pad = policy.encode(cs, ctx["a"][idx], ctx["y"][idx], ctx["valid"][idx] & use[:, None])
+        else:
+            c = empty_ctx(B, policy.Tc, y.shape[-1], device)
+            memory, pad = policy.encode(c["s"], c["a"], c["y"], c["valid"])
+        loss = (((policy.decode(q, memory, pad) - y) ** 2).mean(-1) * m).sum() / m.sum().clamp_min(1.0)
+        opt.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+        opt.step()
+    return loss.item()
+
+
 def main():
     args = tyro.cli(Args)
     assert args.mode in ("icl", "bc")
@@ -296,6 +330,27 @@ def main():
                 out[r] = tot / m.sum().item()
         policy.train()
         return out
+
+    if args.finetune_ckpt:
+        base = torch.load(args.finetune_ckpt, map_location=device)
+        policy.load_state_dict(base)
+        results = {"0": dict(eval=evaluate())}
+        print("n=0 (no fine-tuning):", results["0"]["eval"], flush=True)
+        g = torch.Generator(device=device).manual_seed(args.eval_seed + 5000)
+        ft_goals = checker_sample(N, "black", device, g, args.split)  # one fixed set of black goals; env i keeps its peg geometry
+        ex = rollout(venv, expert, policy, args, ft_goals, args.eval_seed + 100, "expert")  # the success demos (expert, true pose)
+        ok = ex["succ"].nonzero()[:, 0]  # only goals the expert solves
+        e1 = rollout(venv, expert, policy, args, ft_goals, args.eval_seed + 200, "student", empty_ctx(N, Tc, A, device)) if icl else None
+        print(f"expert solves {len(ok)}/{N} fine-tuning goals" + (f"; the policy's own attempt 1 succeeds on {e1['succ'][ok].float().mean().item():.3f} of them" if icl else ""), flush=True)
+        full_ctx = make_ctx(e1, args.ctx_stride) if icl else None
+        for n in [int(x) for x in args.ft_sizes.split(",")]:
+            sel = ok[:n]
+            ctx = {k: v[sel] for k, v in full_ctx.items()} if icl else None
+            loss = finetune(policy, base, args, icl, ex["obs"][sel], ex["lab"][sel], ex["alive"][sel], ctx)
+            results[str(n)] = dict(eval=evaluate(), final_loss=loss, attempt1_success_on_demos=e1["succ"][sel].float().mean().item() if icl else None)
+            print(f"n={n} loss {loss:.4f} | " + " | ".join(f"{r}: pass@1 {v['pass1']:.3f} pass@2 {v['pass2']:.3f}" for r, v in results[str(n)]["eval"].items()), flush=True)
+        run.save_json("results.json", dict(mode=args.mode, ckpt=args.finetune_ckpt, split=args.split, results=results))
+        return
 
     keys = ("Q", "L", "A") + (("cs", "ca", "cy", "cv") if icl else ())
     D = {k: [] for k in keys}
