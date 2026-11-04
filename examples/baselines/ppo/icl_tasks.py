@@ -254,19 +254,43 @@ class PegTask:
         return command_tokens(v[:, :3], v[:, 3]).reshape(*shape, -1)
 
 
-def checker_sample(n, region, device, gen=None):
-    """Hole (box) poses (x, y, yaw) for the checkerboard hold-out test on the peg task. The box xy range (BOX_XY_LOW/HIGH, x in [-0.05, 0.05], y in [0.2, 0.4])
-    is split into 2x2 cells (i = x half, j = y half); white = cells (0,0) and (1,1), black = (0,1) and (1,0). xy is uniform inside a random cell of the
-    region ('white' | 'black' | 'all'), yaw uniform in the usual range."""
-    from mani_skill.envs.tasks.tabletop import peg_insertion_side_bias as pb
+# Train / test splits of the hole (box) pose for the hold-out test (icl_checker.py). Each split: bounds of the full box pose range (x, y, yaw) and
+# predicates on the normalised pose u = (ux, uy, uyaw) in [0,1]^3 that select the train ("white") and test ("black") regions. "all" = the full range.
+import math as _m
 
-    lo, hi = torch.tensor(pb.BOX_XY_LOW, device=device), torch.tensor(pb.BOX_XY_HIGH, device=device)
-    u = torch.rand(n, 3, device=device, generator=gen)
-    cells = {"white": [(0, 0), (1, 1)], "black": [(0, 1), (1, 0)], "all": [(0, 0), (1, 1), (0, 1), (1, 0)]}[region]
-    cell = torch.tensor(cells, device=device, dtype=torch.float)[torch.randint(0, len(cells), (n,), device=device, generator=gen)]
-    xy = lo + (hi - lo) * (cell + u[:, :2]) / 2
-    yaw = pb.BOX_YAW_LOW + (pb.BOX_YAW_HIGH - pb.BOX_YAW_LOW) * u[:, 2]
-    return torch.cat([xy, yaw[:, None]], dim=-1)
+_X0, _Y0 = (-0.05, 0.05), (0.2, 0.4)  # original PegInsertionSideBias box range (x, y)
+_YAW0 = (_m.pi / 2 - _m.pi / 8, _m.pi / 2 + _m.pi / 8)
+_cb = lambda u: (u[:, 0] > 0.5) == (u[:, 1] > 0.5)
+SPLITS = {
+    "checker": dict(x=_X0, y=_Y0, yaw=_YAW0, train=_cb, test=lambda u: ~_cb(u)),  # the original 2x2 checkerboard
+    # wider box range (x +-0.15, y 0.1..0.5), train on a centre square, test on the surrounding ring
+    "wide_ring": dict(x=(-0.15, 0.15), y=(0.1, 0.5), yaw=_YAW0,
+                      train=lambda u: ((u[:, :2] - 0.5).abs() < 0.25).all(1), test=lambda u: ((u[:, :2] - 0.5).abs() >= 0.35).any(1)),
+    # wider range, train on the left x half, test on the far right x quarter (a gap in between)
+    "wide_half": dict(x=(-0.15, 0.15), y=(0.1, 0.5), yaw=_YAW0, train=lambda u: u[:, 0] < 0.5, test=lambda u: u[:, 0] > 0.75),
+    # wider range, train on one corner quadrant, test on the opposite corner quadrant
+    "wide_corner": dict(x=(-0.15, 0.15), y=(0.1, 0.5), yaw=_YAW0,
+                        train=lambda u: (u[:, 0] < 0.4) & (u[:, 1] < 0.4), test=lambda u: (u[:, 0] > 0.6) & (u[:, 1] > 0.6)),
+    # original xy, wider yaw (+-pi/2 around pi/2): train on the lower yaw half... test on the extreme yaws
+    "wide_yaw": dict(x=_X0, y=_Y0, yaw=(0.0, _m.pi), train=lambda u: (u[:, 2] - 0.5).abs() < 0.2, test=lambda u: (u[:, 2] - 0.5).abs() > 0.35),
+    # wide xy range and wide yaw, centre box in (x, y, yaw) -> everything outside
+    "wide_all": dict(x=(-0.15, 0.15), y=(0.1, 0.5), yaw=(0.0, _m.pi),
+                     train=lambda u: ((u - 0.5).abs() < 0.25).all(1), test=lambda u: ((u - 0.5).abs() >= 0.35).any(1)),
+}
+
+
+def checker_sample(n, region, device, gen=None, split="checker"):
+    """Hole (box) poses (x, y, yaw) of a hold-out split. region: 'white' (train) | 'black' (test) | 'all' (full range). Rejection sampling."""
+    sp = SPLITS[split]
+    lo = torch.tensor([sp["x"][0], sp["y"][0], sp["yaw"][0]], device=device)
+    hi = torch.tensor([sp["x"][1], sp["y"][1], sp["yaw"][1]], device=device)
+    pred = {"white": sp["train"], "black": sp["test"], "all": lambda u: torch.ones(len(u), dtype=torch.bool, device=u.device)}[region]
+    out = []
+    while sum(len(o) for o in out) < n:
+        u = torch.rand(4 * n, 3, device=device, generator=gen)
+        out.append(u[pred(u)])
+    u = torch.cat(out)[:n]
+    return lo + (hi - lo) * u
 
 
 class RotTask:

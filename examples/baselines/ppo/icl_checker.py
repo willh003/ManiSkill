@@ -59,6 +59,8 @@ class Args:
     n_layers: int = 2
     seed: int = 1
     eval_seed: int = 12345
+    split: str = "checker"
+    """hold-out split name (icl_tasks.SPLITS); white = train region, black = test region"""
     eval_envs_only: bool = False
     """only evaluate the expert references and exit (smoke test)"""
 
@@ -248,8 +250,8 @@ def main():
     N = args.num_envs
 
     gens = {r: torch.Generator(device=device).manual_seed(args.eval_seed + 1000 * (i + 1)) for i, r in enumerate(("white", "black"))}
-    eval_goals = {r: checker_sample(N, r, device, gens[r]) for r in gens}
-    eval_fake = {r: checker_sample(N, "all", device, gens[r]) for r in gens}
+    eval_goals = {r: checker_sample(N, r, device, gens[r], args.split) for r in gens}
+    eval_fake = {r: checker_sample(N, "all", device, gens[r], args.split) for r in gens}
 
     def evaluate(ctx_mode="normal", region_list=("white", "black")):
         """attempt 1 (no context), attempt 2 (conditioned on attempt 1 unless ctx_mode == no_ctx, which is also what BC does)."""
@@ -282,7 +284,7 @@ def main():
         seed = args.seed * 1000 + it * 10
         info = {}
         if icl:
-            goals, fake = checker_sample(N, "white", device), checker_sample(N, "all", device)
+            goals, fake = checker_sample(N, "white", device, split=args.split), checker_sample(N, "all", device, split=args.split)
             e1 = rollout(venv, expert, policy, args, goals, seed, "wrong_expert", fake=fake)
             c = make_ctx(e1, args.ctx_stride)
             e2 = rollout(venv, expert, policy, args, goals, seed + 1, "student", c, mask_pose=True)
@@ -292,7 +294,7 @@ def main():
             info = dict(wrong_expert_success=e1["succ"].float().mean().item(), student_masked_success=e2["succ"].float().mean().item())
         else:
             for e in range(2):  # 2N clean demos on white goals
-                ep = rollout(venv, expert, policy, args, checker_sample(N, "white", device), seed + e, "expert")
+                ep = rollout(venv, expert, policy, args, checker_sample(N, "white", device, split=args.split), seed + e, "expert")
                 for k, v in zip(keys, (ep["obs"], ep["lab"], ep["alive"])):
                     D[k].append(v)
         Dc = {k: torch.cat(v) for k, v in D.items()}
