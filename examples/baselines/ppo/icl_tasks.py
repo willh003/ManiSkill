@@ -254,6 +254,21 @@ class PegTask:
         return command_tokens(v[:, :3], v[:, 3]).reshape(*shape, -1)
 
 
+def checker_sample(n, region, device, gen=None):
+    """Hole (box) poses (x, y, yaw) for the checkerboard hold-out test on the peg task. The box xy range (BOX_XY_LOW/HIGH, x in [-0.05, 0.05], y in [0.2, 0.4])
+    is split into 2x2 cells (i = x half, j = y half); white = cells (0,0) and (1,1), black = (0,1) and (1,0). xy is uniform inside a random cell of the
+    region ('white' | 'black' | 'all'), yaw uniform in the usual range."""
+    from mani_skill.envs.tasks.tabletop import peg_insertion_side_bias as pb
+
+    lo, hi = torch.tensor(pb.BOX_XY_LOW, device=device), torch.tensor(pb.BOX_XY_HIGH, device=device)
+    u = torch.rand(n, 3, device=device, generator=gen)
+    cells = {"white": [(0, 0), (1, 1)], "black": [(0, 1), (1, 0)], "all": [(0, 0), (1, 1), (0, 1), (1, 0)]}[region]
+    cell = torch.tensor(cells, device=device, dtype=torch.float)[torch.randint(0, len(cells), (n,), device=device, generator=gen)]
+    xy = lo + (hi - lo) * (cell + u[:, :2]) / 2
+    yaw = pb.BOX_YAW_LOW + (pb.BOX_YAW_HIGH - pb.BOX_YAW_LOW) * u[:, 2]
+    return torch.cat([xy, yaw[:, None]], dim=-1)
+
+
 class RotTask:
     """Hidden signed rotation axis (RotateDirHidden-v1, allegro hand): the task is the true axis (+-x, +-y, +-z), fixed across the task's
     episodes. The student does not see the axis (obs 83:86) nor the cumulative angle (105); the expert sees the full 106-dim obs.
