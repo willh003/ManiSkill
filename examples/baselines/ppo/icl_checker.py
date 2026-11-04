@@ -276,6 +276,27 @@ def main():
     if args.eval_envs_only:
         return
 
+    # fixed validation sets: clean expert demos (true pose) on the eval goals of each region; val loss = action MSE of the policy (no context) vs the expert labels
+    val = {}
+    for r in ("white", "black"):
+        e = rollout(venv, expert, policy, args, eval_goals[r], args.eval_seed + 7, "expert")
+        val[r] = (e["obs"], e["lab"], e["alive"].float())
+
+    def val_loss():
+        policy.eval()
+        out = {}
+        with torch.no_grad():
+            for r, (o, lab, m) in val.items():
+                tot = 0.0
+                for i in range(0, N, 128):  # chunks of tasks
+                    c = empty_ctx(len(o[i:i + 128]), Tc, A, device)
+                    memory, pad = policy.encode(c["s"], c["a"], c["y"], c["valid"])
+                    pred = policy.decode(o[i:i + 128], memory, pad)
+                    tot += (((pred - lab[i:i + 128]) ** 2).mean(-1) * m[i:i + 128]).sum().item()
+                out[r] = tot / m.sum().item()
+        policy.train()
+        return out
+
     keys = ("Q", "L", "A") + (("cs", "ca", "cy", "cv") if icl else ())
     D = {k: [] for k in keys}
     log = []
@@ -304,12 +325,13 @@ def main():
             policy.set_norm(Dc["Q"], D["cy"][0] if icl else torch.zeros(1, Y_DIM, device=device))
         loss = train(policy, opt, sched, Dc, args, icl)
         ev = evaluate()
+        vl = val_loss()
         n_traj = Dc["Q"].shape[0] * (2 if icl else 1)
-        row = dict(iteration=it, loss=loss, n_traj=n_traj, eval=ev, seconds=time.time() - t0, **info)
+        row = dict(iteration=it, loss=loss, val_loss=vl, n_traj=n_traj, eval=ev, seconds=time.time() - t0, **info)
         log.append(row)
-        print(f"it {it:2d} loss {loss:.4f} traj {n_traj} | " + " | ".join(
+        print(f"it {it:2d} loss {loss:.4f} val white {vl['white']:.4f} black {vl['black']:.4f} traj {n_traj} | " + " | ".join(
             f"{r}: pass@1 {v['pass1']:.3f} pass@2 {v['pass2']:.3f}" for r, v in ev.items()) + f" | {info} {row['seconds']:.0f}s", flush=True)
-        run.log(it, dict(loss=loss, **{f"eval/{r}_{k}": x for r, v in ev.items() for k, x in v.items()}, **info))
+        run.log(it, dict(loss=loss, val_loss_white=vl['white'], val_loss_black=vl['black'], **{f"eval/{r}_{k}": x for r, v in ev.items() for k, x in v.items()}, **info))
         torch.save(policy.state_dict(), run.ckpt("policy_latest.pt"))
 
     controls = {"normal": log[-1]["eval"]}
