@@ -74,24 +74,34 @@ def main():
     full = lambda n, gen=None: checker_sample(n, "all", device, gen, args.split)
 
     # ---- collect: env i keeps its peg geometry, so a pair shares an env index; redo until the expert solves the goal and fails on the wrong goal
-    sd = args.seed * 1000
-    goals, fake = full(N), full(N)
-    ex = rollout(venv, expert, None, args, goals, sd, "expert")
-    wr = rollout(venv, expert, None, args, goals, sd + 1, "wrong_expert", fake=fake)
-    for r in range(8):  # resample wrong goals that accidentally succeed
-        bad = wr["succ"]
-        if not bad.any():
-            break
-        fake = torch.where(bad[:, None], full(N), fake)
-        w2 = rollout(venv, expert, None, args, goals, sd + 2 + r, "wrong_expert", fake=fake)
-        for k in wr:
-            wr[k] = torch.where(bad.view(-1, *[1] * (wr[k].dim() - 1)), w2[k], wr[k])
-    ok = (ex["succ"] & ~wr["succ"]).nonzero()[:, 0][:K]
-    print(f"expert solves {ex['succ'].float().mean():.3f} of goals; pairs usable {len(ok)}/{K}; wrong-expert success {wr['succ'].float().mean():.3f}", flush=True)
-    assert len(ok) >= K
-    opt = {k: ex[k][ok] for k in ("obs", "lab", "alive")}
-    ctx = {k: v[ok] for k, v in make_ctx(wr, args.ctx_stride).items()}
-    sub_len = wr["alive"][ok].sum(1).float().mean().item()
+    OPT, CTX, nsucc, ntot, sub_lens = {k: [] for k in ("obs", "lab", "alive")}, {k: [] for k in ("s", "a", "y", "valid")}, 0, 0, []
+    have, b = 0, 0
+    while have < K:
+        sd = args.seed * 100000 + b * 20
+        goals, fake = full(N), full(N)
+        ex = rollout(venv, expert, None, args, goals, sd, "expert")
+        wr = rollout(venv, expert, None, args, goals, sd + 1, "wrong_expert", fake=fake)
+        for r in range(8):  # resample wrong goals that accidentally succeed
+            bad = wr["succ"]
+            if not bad.any():
+                break
+            fake = torch.where(bad[:, None], full(N), fake)
+            w2 = rollout(venv, expert, None, args, goals, sd + 2 + r, "wrong_expert", fake=fake)
+            for k in wr:
+                wr[k] = torch.where(bad.view(-1, *[1] * (wr[k].dim() - 1)), w2[k], wr[k])
+        ok = (ex["succ"] & ~wr["succ"]).nonzero()[:, 0]
+        for k in OPT:
+            OPT[k].append(ex[k][ok])
+        for k, v in make_ctx(wr, args.ctx_stride).items():
+            CTX[k].append(v[ok])
+        have += len(ok)
+        nsucc += ex["succ"].sum().item()
+        ntot += N
+        b += 1
+    print(f"expert solves {nsucc / ntot:.3f} of goals; collected {have} pairs in {b} batches", flush=True)
+    opt = {k: torch.cat(v)[:K] for k, v in OPT.items()}
+    ctx = {k: torch.cat(v)[:K] for k, v in CTX.items()}
+    sub_len = 100.0
 
     # ---- fixed eval goals
     g = torch.Generator(device=device).manual_seed(args.eval_seed)

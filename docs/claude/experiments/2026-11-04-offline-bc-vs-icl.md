@@ -24,3 +24,16 @@ Code: `examples/baselines/ppo/icl_offline.py` (reuses `Policy`, `rollout`, `make
 
 ## Convergence check (N=200, seed 1; `--log-every`, val = expert-action MSE on the eval goals, no context)
 Train loss converges to ~0 (BC 0.0011 at 3k steps, 0.00006 at 12k; ICL 0.0016 -> 0.0001). Val loss is ~0.05 already at step 500 and rises monotonically (BC 0.049 -> 0.055 at 3k -> 0.061 at 12k; ICL 0.049 -> 0.053 -> 0.057): pure overfitting, a ~50x train/val gap. Success does not move with steps (BC 0.061/0.096 at 3k vs 0.064/0.111 at 12k; ICL 0.082/0.104 vs 0.062/0.104). So optimisation is not the bottleneck; data coverage is. Training longer does not help, early stopping would give at most a small gain. The sweep above used 3k steps without val logging.
+
+## Larger N (N = 500..10000, 6000 steps, 3 seeds; runs `logs/runs/offline-big-s{1,2,3}`, plot `logs/renders/offline/bc_vs_icl_large.png`)
+`icl_offline.py` now collects in batches of 512 goals (expert solves 0.91; ~10.2k pairs). Mean over 3 seeds, pass@1 / pass@2 (expert 0.896 single attempt):
+| N | 500 | 1000 | 2000 | 5000 | 10000 |
+|---|---|---|---|---|---|
+| BC | 0.343/0.527 | 0.568/0.768 | 0.712/0.854 | 0.771/0.884 | 0.789/0.898 |
+| ICL | 0.373/0.518 | 0.548/0.736 | 0.689/0.842 | 0.764/0.890 | 0.781/0.886 |
+| ICL no_ctx (pass@2) | 0.579 | 0.759 | 0.842 | 0.881 | 0.893 |
+| ICL shuf_y (pass@2) | 0.460 | 0.685 | 0.808 | 0.863 | 0.874 |
+Seed std ~0.02-0.03.
+- Both scale smoothly with N; BC pass@1 saturates near 0.79 (below the 0.90 expert). Val loss keeps falling with steps here (no overfitting at N >= 1000).
+- ICL ~= BC on pass@1 and pass@2 at every N (differences within seed noise). Replacing the context with none gives the same or higher pass@2 than using it, and shuffling the feedback hurts, so ICL does read the context but it does not help: the context is slightly harmful at small N, neutral at large N.
+- pass@2 gain over pass@1 is similar for BC (reset noise: 0.18 at N=500, 0.11 at 10k) and ICL; the failure context adds nothing beyond a retry. With the true goal visible, the wrong-goal trajectory + feedback carries no information the policy needs.
