@@ -6,3 +6,4 @@
 - `plot_icl.py`: success_once vs h for any set of `icl-*` runs, optional controls panel. `plot_ppo_curves.py`: PPO eval curves from tensorboard.
 - `ppo.py`, `ppo_fast.py`: expert training (same Agent state dict). `slurm/expert_*.sbatch`: expert recipes; `slurm/icl.sbatch`: generic student job (usage in its header).
 - Envs: `mani_skill/envs/tasks/tabletop/{push_t_goal,pick_cube_bias,peg_insertion_side_bias}.py`, `dexterity/rotate_dir_hidden.py` (the allegro expert did not learn yet, see the rotation attempt in the experiments).
+- `icl_checker.py`: standalone hold-out test (ICL per-step feedback vs BC, splits, fine-tuning); see `implementations/checkerboard-holdout.md`. `plot_checker_ft.py` plots the fine-tuning results.

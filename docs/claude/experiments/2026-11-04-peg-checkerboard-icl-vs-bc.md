@@ -1,6 +1,6 @@
 # Peg hold-out test: ICL (per-step feedback) vs BC (2026-11-04)
 
-Implementation: `implementations/checkerboard-holdout.md` (`icl_checker.py`). Expert: `peg-expert-r1/strong_ckpt.pt`. All numbers: 512 fixed eval goals per region, mean over 3 seeds.
+Implementation: `implementations/checkerboard-holdout.md` (`icl_checker.py`). Expert: `peg-expert-r1/strong_ckpt.pt` (wide_corner: 0.867 white / 0.865 black, single attempt). All numbers: 512 fixed eval goals per region, mean over 3 seeds.
 
 ## 1. Original 2x2 checker (box range x +-0.05, y 0.2..0.4): no gap
 Jobs 42837410-15 (`logs/runs/checker-{icl,bc}-s{1,2,3}`). BC is ~0.99 pass@1 on black (expert 1.00): interpolating the hole pose is easy. Not a useful test.
@@ -22,3 +22,12 @@ Black pass@1 / pass@2 (n = 0, 10, 50, 200):
 - BC:  0.43/0.56, 0.62/0.78, 0.77/0.85, 0.81/0.87
 White pass@1 (forgetting): ICL 0.84 -> 0.31, 0.39, 0.40; BC 0.84 -> 0.63, 0.55, 0.51.
 ICL never beats BC after fine-tuning; both gain a lot on black from few demos and both forget white (ICL more).
+
+Black pass@2 at 200 demos: BC 0.87 ~ expert 0.865 (expert is a single attempt, so the dashed line on pass@2 panels is only a reference). The ICL-BC black gap shrinks 0.17 -> 0.06 pass@2 (n=0 -> 200); ICL's retry gain shrinks (0.23 -> 0.10 at n=200) as attempt 1 improves.
+ICL forgot white most at n=10 (pass@1 0.31). Checkpoints with fewer attempt-1 successes on the demo goals forgot more (3 ckpts, not conclusive).
+
+## Conclusion / caveats
+- Hypothesis (ICL pass@2 > BC pass@2 on held-out black) not supported in this setup: pretrained, ICL attempt 2 uses feedback (controls confirm) but weaker attempt 1 cancels the gain; after fine-tuning BC >= ICL everywhere.
+- Fine-tuning has one config (lr 1e-4, 1000 steps, no white replay); 3 checkpoints only. ICL ft keeps attempt 1 even if it succeeded.
+- Pretraining detail: context states are masked together with the query (one dropout draw per sample); feedback y and context actions are never masked. At eval nothing is masked.
+- Next candidates: white replay during ft, ICL ft without pose dropout, data-seed vs init-seed ablation, more seeds.

@@ -13,3 +13,6 @@ Code: `examples/baselines/ppo/icl_checker.py` (standalone; reuses `PegTask(full_
 - Eval: pass@1 = attempt 1 success_once, pass@2 = attempt 1 or 2. ICL attempt 2 is conditioned on attempt 1; BC (and ICL `no_ctx`) attempt 2 is an independent reset of the same goal.
   ICL controls at the end: `no_y`, `shuf_y`, `no_ctx`.
 - Caveats: wrong poses range over black cells too (feedback displacements cover black ranges); ~5% of wrong-pose episodes succeed by accident; BC has no pose dropout.
+- Splits: `--split` selects from `icl_tasks.SPLITS` (checker, wide_ring, wide_half, wide_corner, wide_yaw, wide_all); `checker_sample(n, region, split=)` rejection-samples in normalized coords. Main split: wide_corner (box x +-0.15, y 0.1..0.5, train one corner, test the opposite).
+- Fine-tuning: `--finetune-ckpt ... --ft-sizes 10,50,200 --ft-steps 1000 --ft-lr 1e-4` (job `slurm/icl_checker_ft.sbatch`). Black goals sampled once, expert demos kept where it succeeds (nested prefixes); ICL attempt 1 = the policy's own rollout (true pose, no context); BC = demos only. Plot: `plot_checker_ft.py`.
+- Val-loss logging (expert-action MSE on eval goals, no context) exists in the training loop.
