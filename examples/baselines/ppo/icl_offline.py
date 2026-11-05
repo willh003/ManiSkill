@@ -43,6 +43,8 @@ class Args:
     n_layers: int = 2
     seed: int = 1
     eval_seed: int = 12345
+    ctx_feedback: str = "feedback"
+    """feedback: per-step (hole - head, head, cos/sin yaw) | expert_action: the expert's action (true goal) at each context state"""
     log_every: int = 0
     """log train loss and held-out val loss (expert-action MSE on the eval goals, no context) every this many steps"""
     split: str = "wide_corner"
@@ -62,6 +64,7 @@ def main():
         env = FlattenActionSpaceWrapper(env)
     venv = ManiSkillVectorEnv(env, N, ignore_terminations=True, record_metrics=True)
     A = venv.single_action_space.shape[0]
+    assert args.ctx_feedback != "expert_action" or A == Y_DIM, (A, Y_DIM)
 
     class _Space:
         single_observation_space = type("S", (), {"shape": (43,)})
@@ -92,6 +95,8 @@ def main():
         ok = (ex["succ"] & ~wr["succ"]).nonzero()[:, 0]
         for k in OPT:
             OPT[k].append(ex[k][ok])
+        if args.ctx_feedback == "expert_action":
+            wr["y"] = wr["lab"]
         for k, v in make_ctx(wr, args.ctx_stride).items():
             CTX[k].append(v[ok])
         have += len(ok)
@@ -124,6 +129,8 @@ def main():
     def evaluate(policy, icl, ctx_mode="normal"):
         policy.eval()
         e1 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "student", empty_ctx(N, Tc, A, device))
+        if args.ctx_feedback == "expert_action":
+            e1["y"] = e1["lab"]
         e2 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed + 1, "student", make_ctx(e1, args.ctx_stride),
                      ctx_mode if icl else "no_ctx")
         return dict(pass1=e1["succ"].float().mean().item(), pass2=(e1["succ"] | e2["succ"]).float().mean().item(), attempt2=e2["succ"].float().mean().item())

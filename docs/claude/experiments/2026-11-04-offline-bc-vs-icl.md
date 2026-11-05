@@ -37,3 +37,16 @@ Seed std ~0.02-0.03.
 - Both scale smoothly with N; BC pass@1 saturates near 0.79 (below the 0.90 expert). Val loss keeps falling with steps here (no overfitting at N >= 1000).
 - ICL ~= BC on pass@1 and pass@2 at every N (differences within seed noise). Replacing the context with none gives the same or higher pass@2 than using it, and shuffling the feedback hurts, so ICL does read the context but it does not help: the context is slightly harmful at small N, neutral at large N.
 - pass@2 gain over pass@1 is similar for BC (reset noise: 0.18 at N=500, 0.11 at 10k) and ICL; the failure context adds nothing beyond a retry. With the true goal visible, the wrong-goal trajectory + feedback carries no information the policy needs.
+
+## Expert action in context (`--ctx-feedback expert_action`; runs `logs/runs/offline-ea-s{1,2,3}`, plot `logs/renders/offline/bc_vs_icl_expert_action_ctx.png`)
+Same as above, but the per-step feedback in the context is replaced by the expert's action (true goal) at that context state (context token = state, executed action, expert action). Train: wrong-goal trajectory states; eval: attempt-1 states with the expert's label computed on them. 3 seeds, 6000 steps, N = 100..10000. pass@1 / pass@2 mean:
+| N | 100 | 200 | 500 | 1000 | 2000 | 5000 | 10000 |
+|---|---|---|---|---|---|---|---|
+| BC | 0.021/0.034 | 0.057/0.104 | 0.344/0.533 | 0.572/0.768 | 0.713/0.857 | 0.776/0.890 | 0.786/0.898 |
+| ICL | 0.025/0.031 | 0.091/0.135 | 0.370/0.516 | 0.544/0.727 | 0.689/0.831 | 0.766/0.887 | 0.769/0.893 |
+| ICL no_ctx (p@2) | 0.052 | 0.160 | 0.562 | 0.757 | 0.831 | 0.883 | 0.889 |
+| ICL shuf_y (p@2) | 0.027 | 0.122 | 0.493 | 0.715 | 0.834 | 0.887 | 0.893 |
+| ICL attempt-2-only | 0.006 | 0.044 | 0.184 | 0.348 | 0.449 | 0.655 | 0.691 |
+- No benefit: ICL ~= BC, and pass@2 with the context is <= pass@2 without it (no_ctx) at every N. Same picture as with the original feedback.
+- Shuffling the expert actions barely changes pass@2 (0.893 vs 0.893 at 10k): the policy does not use them. Expected here: it sees the true goal, so it can compute the expert action itself, and the context is redundant.
+- Attempt 2 alone (conditioned on attempt 1) is clearly worse than attempt 1 without context (0.69 vs 0.77 at 10k), so conditioning on the context *hurts*. Likely a train/test mismatch: train contexts are wrong-goal expert trajectories (all failures), eval contexts are the policy's own rollouts (often successes, ending at the first success). Not tested.
