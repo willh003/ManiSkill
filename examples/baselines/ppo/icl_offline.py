@@ -19,7 +19,7 @@ import mani_skill.envs  # noqa: F401
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
 from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 
-from icl_checker import Policy, ctx_index, empty_ctx, make_ctx, rollout, S_DIM, Y_DIM
+from icl_checker import Policy, apply_mask, ctx_index, empty_ctx, make_ctx, rollout, S_DIM, Y_DIM
 from icl_tasks import checker_sample
 from ppo import Agent
 from run_logging import LOG_ROOT, RunDir
@@ -45,6 +45,8 @@ class Args:
     eval_seed: int = 12345
     ctx_feedback: str = "feedback"
     """feedback: per-step (hole - head, head, cos/sin yaw) | expert_action: the expert's action (true goal) at each context state"""
+    hide_goal: bool = False
+    """the hole pose is masked (zeros + flag) in every query and context state, in training and eval; the goal is only recoverable from the context's feedback / expert actions"""
     log_every: int = 0
     """log train loss and held-out val loss (expert-action MSE on the eval goals, no context) every this many steps"""
     split: str = "wide_corner"
@@ -108,6 +110,11 @@ def main():
     ctx = {k: torch.cat(v)[:K] for k, v in CTX.items()}
     sub_len = 100.0
 
+    if args.hide_goal:
+        allm = torch.ones(K, dtype=torch.bool, device=device)
+        opt["obs"] = apply_mask(opt["obs"], allm)
+        ctx["s"] = apply_mask(ctx["s"], allm)
+
     # ---- fixed eval goals
     g = torch.Generator(device=device).manual_seed(args.eval_seed)
     eval_goals = full(N, g)
@@ -115,6 +122,8 @@ def main():
     print(f"expert on eval goals: {ref:.3f}", flush=True)
 
     vd = rollout(venv, expert, None, args, eval_goals, args.eval_seed + 7, "expert")
+    if args.hide_goal:
+        vd["obs"] = apply_mask(vd["obs"], torch.ones(N, dtype=torch.bool, device=device))
 
     def val_loss(policy):
         policy.eval()
@@ -128,11 +137,11 @@ def main():
 
     def evaluate(policy, icl, ctx_mode="normal"):
         policy.eval()
-        e1 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "student", empty_ctx(N, Tc, A, device))
+        e1 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "student", empty_ctx(N, Tc, A, device), mask_pose=args.hide_goal)
         if args.ctx_feedback == "expert_action":
             e1["y"] = e1["lab"]
         e2 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed + 1, "student", make_ctx(e1, args.ctx_stride),
-                     ctx_mode if icl else "no_ctx")
+                     ctx_mode if icl else "no_ctx", mask_pose=args.hide_goal)
         return dict(pass1=e1["succ"].float().mean().item(), pass2=(e1["succ"] | e2["succ"]).float().mean().item(), attempt2=e2["succ"].float().mean().item())
 
     results = dict(expert_ref=ref, suboptimal_len=sub_len, runs={})

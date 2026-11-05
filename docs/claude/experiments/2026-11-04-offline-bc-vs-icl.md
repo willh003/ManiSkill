@@ -50,3 +50,17 @@ Same as above, but the per-step feedback in the context is replaced by the exper
 - No benefit: ICL ~= BC, and pass@2 with the context is <= pass@2 without it (no_ctx) at every N. Same picture as with the original feedback.
 - Shuffling the expert actions barely changes pass@2 (0.893 vs 0.893 at 10k): the policy does not use them. Expected here: it sees the true goal, so it can compute the expert action itself, and the context is redundant.
 - Attempt 2 alone (conditioned on attempt 1) is clearly worse than attempt 1 without context (0.69 vs 0.77 at 10k), so conditioning on the context *hurts*. Likely a train/test mismatch: train contexts are wrong-goal expert trajectories (all failures), eval contexts are the policy's own rollouts (often successes, ending at the first success). Not tested.
+
+## Goal hidden at test time (`--hide-goal`, per-step distance-to-goal feedback; runs `logs/runs/offline-hide-feedback-s{1,2,3}`, plot `logs/renders/offline/bc_vs_icl_hidden_goal.png`)
+The hole pose is masked (zeros + flag) in every query and in the context states, in training and eval, for BC and ICL. The only goal information is the context's per-step feedback (hole - head, head, cos/sin yaw) from the paired wrong-goal failure (train) / the policy's own attempt 1 (eval). 6000 steps, 3 seeds. (An expert-action-context hidden-goal run was started and killed on request; no results.)
+pass@1 / pass@2 mean (expert 0.896 with the goal visible):
+| N | 500 | 1000 | 2000 | 5000 | 10000 |
+|---|---|---|---|---|---|
+| BC | 0.009/0.018 | 0.009/0.023 | 0.016/0.030 | 0.014/0.028 | 0.012/0.023 |
+| ICL | 0.006/0.027 | 0.011/0.095 | 0.010/0.206 | 0.016/0.299 | 0.008/0.326 |
+| ICL no_ctx (p@2) | 0.012 | 0.025 | 0.022 | 0.025 | 0.020 |
+| ICL shuf_y (p@2) | 0.012 | 0.019 | 0.015 | 0.020 | 0.019 |
+- pass@1 ~1% for both (goal invisible, no information). BC pass@2 stays ~2-3% (a retry gives nothing).
+- ICL pass@2 grows steadily with N (0.03 -> 0.33; seed std 0.01-0.04) and is >10x BC from N>=2000. Removing the context or shuffling the feedback drops it back to BC level, so the gain is from inferring the goal from the first attempt's feedback.
+- Still far below the visible-goal level (0.89): one wrong-goal-style failure + feedback at N=10000 gets a third of the way; the curve has not saturated.
+- Caveat: eval attempt-1 contexts are the policy's own (goal-blind) rollouts, not the wrong-goal expert trajectories seen in training; the train/test context mismatch (noted above) may be limiting the result.
