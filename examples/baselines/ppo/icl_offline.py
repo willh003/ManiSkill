@@ -43,6 +43,8 @@ class Args:
     n_layers: int = 2
     seed: int = 1
     eval_seed: int = 12345
+    log_every: int = 0
+    """log train loss and held-out val loss (expert-action MSE on the eval goals, no context) every this many steps"""
     split: str = "wide_corner"
     """only used for its xy / yaw range; goals come from region 'all'"""
 
@@ -97,6 +99,18 @@ def main():
     ref = rollout(venv, expert, None, args, eval_goals, args.eval_seed, "expert")["succ"].float().mean().item()
     print(f"expert on eval goals: {ref:.3f}", flush=True)
 
+    vd = rollout(venv, expert, None, args, eval_goals, args.eval_seed + 7, "expert")
+
+    def val_loss(policy):
+        policy.eval()
+        with torch.no_grad():
+            c = empty_ctx(N, Tc, A, device)
+            memory, pad = policy.encode(c["s"], c["a"], c["y"], c["valid"])
+            mm = vd["alive"].float()
+            v = (((policy.decode(vd["obs"], memory, pad) - vd["lab"]) ** 2).mean(-1) * mm).sum() / mm.sum()
+        policy.train()
+        return v.item()
+
     def evaluate(policy, icl, ctx_mode="normal"):
         policy.eval()
         e1 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "student", empty_ctx(N, Tc, A, device))
@@ -130,7 +144,9 @@ def main():
                 nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
                 o.step()
                 sched.step()
-            res = dict(loss=loss.item(), eval=evaluate(policy, icl))
+                if args.log_every and (_ + 1) % args.log_every == 0:
+                    print(f"  [{method} N={n}] step {_+1} train {loss.item():.5f} val {val_loss(policy):.5f}", flush=True)
+            res = dict(loss=loss.item(), val_loss=val_loss(policy), eval=evaluate(policy, icl))
             if icl:
                 res["controls"] = {cm: evaluate(policy, icl, cm) for cm in ("no_ctx", "shuf_y", "no_y")}
             results["runs"][f"{method}-{n}"] = res
