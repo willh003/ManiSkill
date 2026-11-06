@@ -36,3 +36,13 @@ Same checkpoints/resets, success = cube max z over the 50 steps >= threshold (go
 | 200 | 0.95 | 0.77 | 0.65 | 0.50 | 0.93 |
 | expert | 0.91 | 0.72 | 0.56 | 0.40 | 0.99 |
 Caveat: the demos/expert carry the cube to a random 3-D goal (goal height varies ~0-0.3 m), they do not lift to a fixed height. So the lift rate is capped by the goal height distribution (the expert itself only reaches 0.72 at 0.10 m), and BC at N>=100 beats the expert at low thresholds. A clean lift task needs a fixed-height target (new expert/demos) or conditioning on goal height.
+
+## Goal-blind BC (`pick_bc_nogoal.py`; run `logs/runs/pick-bc-nogoal/`, ckpts `bc-nogoal-{N}-s{seed}.pt`, `results.json`)
+Same demos (`pick-bc/data-s*.pt`), same MLP/steps, but goal_pos (obs 26:29) and obj_to_goal_pos (39:42) are removed from the student obs (36-d). Demos are still goal-directed. 512 eval resets, success = cube max z >= threshold. Mean of 3 seeds, with goal -> without goal:
+| demos | lift>=0.05 | >=0.10 | >=0.15 | >=0.20 | reach goal |
+|---|---|---|---|---|---|
+| 10 | 0.54 -> 0.63 | 0.49 -> 0.53 | 0.34 -> 0.41 | 0.20 -> 0.30 | 0.03 -> 0.01 |
+| 50 | 0.88 -> 0.94 | 0.71 -> 0.87 | 0.52 -> 0.70 | 0.34 -> 0.52 | 0.46 -> 0.01 |
+| 100 | 0.96 -> 0.97 | 0.80 -> 0.89 | 0.63 -> 0.70 | 0.47 -> 0.49 | 0.78 -> 0.02 |
+| 200 | 0.95 -> 0.98 | 0.77 -> 0.93 | 0.65 -> 0.82 | 0.50 -> 0.61 | 0.93 -> 0.02 |
+Goal-blind lifts more reliably than the goal-conditioned policy (no longer pulled to low goals), median max z ~0.2 m at N>=50, but cannot reach the goal. Lift is measured as max z only (not held).
