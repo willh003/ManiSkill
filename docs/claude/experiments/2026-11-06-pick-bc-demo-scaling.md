@@ -25,3 +25,14 @@ Takeaway: smooth scaling, 10 demos is near chance, 200 demos is near the expert 
 - Dominant failure: the cube is grasped and held but not brought to the goal (final cube-goal distance 0.05-0.35 m, median ~0.2 m, vs threshold 0.025). Grasping itself mostly works. Not separated: xy vs height error, or too slow vs wrong direction.
 - Success drops mildly with the initial cube-goal xy distance (0.52 -> 0.32 across bins at N=50) and shows no clear pattern over initial cube xy.
 - Stochasticity (same reset repeated 32x, since PickCube resets randomise cube and goal, there is no same-pose-new-reset to repeat): N=50: 42% of resets always succeed, 50% always fail, 8% mixed; N=100: 75% / 20% / 6%. Outcome is mostly determined by the reset. 64-68% of repeats never diverge in action; the rest diverge at step ~0-12 (GPU nondeterminism).
+
+## Lift criterion (`pick_bc_lift_eval.py`; results `logs/runs/pick-bc/lift_results.json`, plot `logs/renders/pick-bc/lift_vs_demos.png`)
+Same checkpoints/resets, success = cube max z over the 50 steps >= threshold (goal ignored; cube rests at z=0.02). Mean of 3 seeds:
+| demos | lift >= 0.05 | >= 0.10 | >= 0.15 | >= 0.20 | reach goal (orig.) |
+|---|---|---|---|---|---|
+| 10 | 0.54 | 0.49 | 0.34 | 0.20 | 0.03 |
+| 50 | 0.88 | 0.71 | 0.52 | 0.34 | 0.46 |
+| 100 | 0.96 | 0.80 | 0.63 | 0.47 | 0.78 |
+| 200 | 0.95 | 0.77 | 0.65 | 0.50 | 0.93 |
+| expert | 0.91 | 0.72 | 0.56 | 0.40 | 0.99 |
+Caveat: the demos/expert carry the cube to a random 3-D goal (goal height varies ~0-0.3 m), they do not lift to a fixed height. So the lift rate is capped by the goal height distribution (the expert itself only reaches 0.72 at 0.10 m), and BC at N>=100 beats the expert at low thresholds. A clean lift task needs a fixed-height target (new expert/demos) or conditioning on goal height.
