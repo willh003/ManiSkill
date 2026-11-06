@@ -1,6 +1,6 @@
 # Paired offline ICL on peg insertion (plan, 2026-11-06)
 
-Status: PLAN, nothing implemented yet. Planned script: `examples/baselines/ppo/icl_paired.py` (reuses `Policy`, `rollout`, `make_ctx`, `step_feedback` from `icl_checker.py`, and `observed_hole_obs` from `peg_insertion_side_bias.py`).
+Status: SUPERSEDED by `2026-11-06-paired-offline-icl-plan-v2.md` (hidden goal, not noisy). Nothing implemented. Planned script: `examples/baselines/ppo/icl_paired.py` (reuses `Policy`, `rollout`, `make_ctx`, `step_feedback` from `icl_checker.py`, and `observed_hole_obs` from `peg_insertion_side_bias.py`).
 
 ## Goal
 Take the BC policy trained on 500 expert demos (pass@1 ~0.35-0.4; checkpoint `logs/runs/offline-vis-ckpt-s1/checkpoints/bc-500.pt`, it sees the true hole pose) and use its failures as the in-context "previous attempt" for an offline ICL student that only sees a noisy hole pose. The student has to read the true hole pose out of the feedback on the failed attempt and fix its action.
