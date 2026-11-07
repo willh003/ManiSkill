@@ -34,3 +34,15 @@ Observations:
 | 500 | 0.311 | 0.006 | 0.000 | 0.344 |
 The context path, masking, training loop and eval rollouts work: with the goal clean in the context the student matches visible-goal BC at every N and breaks without it. So the 0.03 of the trajectory-context student at N=500 is an extraction / memorisation problem, not a pipeline bug; ceiling at N=500 ~0.31-0.34.
 Next: ablate what the context holds (hole-only -> + peg head / gripper distance -> + states and actions), more pairs, context dropout.
+
+## Context-content ablation (2026-11-07, seed 1, stride 5, reg 1.0)
+Script `examples/baselines/ppo/icl_paired_ablate.py`, reuses saved pairs + hidden BC; results `logs/runs/icl-paired-ablate/results.json` (ckpts per variant/N). Each variant keeps only some channels of the failure-trajectory context (20 tokens). 512 eval configs, pass@2 (attempt-2-only in parens); controls ~0.01-0.02 everywhere.
+
+| context content | N=200 | N=500 |
+|---|---|---|
+| hole pose only (per step) | 0.049 (0.041) | 0.123 (0.113) |
+| 9-d feedback only | 0.043 (0.027) | 0.072 (0.064) |
+| feedback + states | 0.014 (0.004) | 0.031 (0.021) |
+| feedback + states + actions (= full) | 0.006 (0.004) | 0.031 (0.021) |
+
+Single-token oracle (hole only) for reference: 0.102 / 0.311. Train ctx loss falls as channels are added (0.0022 -> 0.0010 at N=500) while eval success falls: each added channel makes the context a better memorisation key. Even the hole-only context is below the oracle token (20 identical tokens, 0.123 vs 0.311 at N=500), so extra tokens/positional structure also hurt. Conclusion: the less the context looks like a per-trajectory fingerprint, the better; extraction from raw trajectories needs more pairs or an explicit regulariser (context dropout / channel dropout / noise on state+action channels).
