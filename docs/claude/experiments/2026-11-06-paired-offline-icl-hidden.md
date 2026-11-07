@@ -83,3 +83,6 @@ Eval (512 fresh configs): expert 0.902, visible-goal BC 0.230, hidden-goal BC 0.
 | 20 | 0.004 | 0.012 | 0.008 | 0.004 / 0.006 | 0.00135 |
 
 No benefit from the context at any K (equal to controls). Note the ceiling here is low: the visible-goal BC on 459 trajectories from only 100 initial states gets 0.23, and the student must additionally generalize to unseen initial states. Not yet diagnosed (needs the oracle-context student on this dataset to separate "cannot extract goal" from "no ceiling").
+
+### v3 oracle check (single true-goal token)
+`examples/baselines/ppo/icl_paired_multi_oracle.py` (results `logs/runs/icl-paired-multi-oracle/results.json`): same 459 expert trajectories, context = one token with only the true goal. Oracle-context student 0.268, shuffled 0.000, no ctx 0.000, visible-goal BC 0.184 (retrained here; 0.230 in the main run, so BC retrain noise ~0.05). So the pipeline and the 100-init dataset support ~0.2-0.27; the trajectory-context student's 0.012 is an extraction failure, not a ceiling problem.
