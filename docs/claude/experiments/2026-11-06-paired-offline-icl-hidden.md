@@ -71,3 +71,15 @@ Success keeps rising roughly log-linearly with pairs and reaches the single-toke
 | 10000 | 0.705 | 0.787 | 0.004 / 0.000 | 0.365 |
 
 The oracle student tracks the visible-goal BC (ceiling ~0.7-0.8, one seed, single eval set so +-0.03 noise) and the trajectory-context student is still far below it (0.365 vs ~0.7 at 10000 pairs), so the gap to ceiling is 2x, down from ~10x at 500 pairs.
+
+## v3: fixed expert set, many shared suboptimal trajectories (2026-11-07, seed 1)
+Script `examples/baselines/ppo/icl_paired_multi.py`, run `logs/runs/icl-paired-multi`, log `logs/icl-paired-multi.log`. 100 initial states (reset seed + env index) x 5 random hole poses -> 459 expert successes (BCs trained on exactly these). Suboptimal = visible BC run in an env whose hole is a random pose f (BC sees f; it solves its own f in 0.295), 20 per initial state, shared across the 5 goals of that init with feedback relabeled with the paired goal g. Hidden-goal student, stride 5, reg 1.0.
+Eval (512 fresh configs): expert 0.902, visible-goal BC 0.230, hidden-goal BC 0.010.
+
+| suboptimal traj per init (K) | pass@1 | pass@2 | attempt 2 | no ctx / shuffled ctx pass@2 | train ctx loss |
+|---|---|---|---|---|---|
+| 1 | 0.000 | 0.006 | 0.006 | 0.004 / 0.006 | 0.00071 |
+| 5 | 0.006 | 0.010 | 0.004 | 0.008 / 0.008 | 0.00148 |
+| 20 | 0.004 | 0.012 | 0.008 | 0.004 / 0.006 | 0.00135 |
+
+No benefit from the context at any K (equal to controls). Note the ceiling here is low: the visible-goal BC on 459 trajectories from only 100 initial states gets 0.23, and the student must additionally generalize to unseen initial states. Not yet diagnosed (needs the oracle-context student on this dataset to separate "cannot extract goal" from "no ceiling").
