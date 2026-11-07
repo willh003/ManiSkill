@@ -22,3 +22,15 @@ Observations:
 - Context gives almost nothing at N<=500: pass@2 0.014-0.035 (eval SE ~0.007). The only visible gap over the controls is stride 5 / 10 at N=500 (0.035 / 0.029 vs no_ctx 0.006 / 0.016), one seed, so suggestive at best. Last frame only: no signal.
 - BC match is good per step (action MSE on BC states ~1e-3, falling with N) but poor in trajectory space: the student's final peg head ends a median 0.15-0.17 m from the BC rollout's on the same reset, within 1 cm for only 2-3% of episodes. Small action errors compound over 100 steps, so attempt-1 failures of the student are not the BC's failures in the sense of "same trajectory". The marginal outcome (pass@1 ~1% for both) does match. Not measured: how far two BC rollouts from the same reset drift apart (sim nondeterminism floor).
 - Earlier unpaired hidden-goal ICL at N=500 also got pass@2 ~0.03; the paired data / extra feedback / matched contexts did not change that at this size.
+
+## Sanity checks (is the low pass@2 a bug?)
+1. Data (scratchpad `diag.py`, not in repo): the hole position recomputed from the stored feedback equals the true hole in the stored obs (max err 5e-8); both rollouts of a pair share hole pose, peg pose and geometry at t=0 (diff 0).
+2. Teacher-forced expert-action MSE on success-trajectory states, context = paired failure (train pairs vs 467 fresh held-out pairs): train loss with the true context ~1e-3 (N=500) / 4e-5 (N=100) vs 0.025 without it, but held-out 0.032 (N=500) / 0.060 (N=100) vs 0.027 without context and 0.062 with a shuffled one. The student uses the context as a lookup key for training pairs and does not generalise (memorisation; a deterministic BC failure trajectory is a fingerprint of its configuration).
+3. Oracle (`icl_paired_oracle.py`, run `logs/runs/icl-paired-oracle/results.json`): same 500 saved pairs and pipeline, but the context is ONE token holding only the true hole pose (position, cos/sin yaw; states/actions zero), queries masked. 512 eval configs, pass@1 with that context:
+| N pairs | oracle-context student | shuffled ctx | no ctx | visible-goal BC (same trajectories, unmasked) |
+|---|---|---|---|---|
+| 100 | 0.021 | 0.000 | 0.000 | 0.016 |
+| 200 | 0.102 | 0.004 | 0.000 | 0.098 |
+| 500 | 0.311 | 0.006 | 0.000 | 0.344 |
+The context path, masking, training loop and eval rollouts work: with the goal clean in the context the student matches visible-goal BC at every N and breaks without it. So the 0.03 of the trajectory-context student at N=500 is an extraction / memorisation problem, not a pipeline bug; ceiling at N=500 ~0.31-0.34.
+Next: ablate what the context holds (hole-only -> + peg head / gripper distance -> + states and actions), more pairs, context dropout.
