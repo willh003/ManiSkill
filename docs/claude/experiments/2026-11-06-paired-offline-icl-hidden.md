@@ -46,3 +46,17 @@ Script `examples/baselines/ppo/icl_paired_ablate.py`, reuses saved pairs + hidde
 | feedback + states + actions (= full) | 0.006 (0.004) | 0.031 (0.021) |
 
 Single-token oracle (hole only) for reference: 0.102 / 0.311. Train ctx loss falls as channels are added (0.0022 -> 0.0010 at N=500) while eval success falls: each added channel makes the context a better memorisation key. Even the hole-only context is below the oracle token (20 identical tokens, 0.123 vs 0.311 at N=500), so extra tokens/positional structure also hurt. Conclusion: the less the context looks like a per-trajectory fingerprint, the better; extraction from raw trajectories needs more pairs or an explicit regulariser (context dropout / channel dropout / noise on state+action channels).
+
+## Scaling pairs (2026-11-07, seed 1, reg 1.0, 6000 steps each)
+Runs `logs/runs/icl-paired-big` (3000 pairs; strides 5 and 100; log `logs/icl-paired-big.log`) and `logs/runs/icl-paired-huge` (10000 pairs; stride 5; log `logs/icl-paired-huge.log`); ckpts per (N, stride). Hidden-goal BC solves only ~0.009 of configs, expert 0.91; 10000 pairs came from 11264 configs. 512 eval configs; controls (no ctx / shuffled / no feedback) stay <= 0.03 throughout; pass@1 ~0.01-0.02.
+
+| pairs | stride 5 pass@2 (attempt 2) | stride 100 pass@2 |
+|---|---|---|
+| 500 | 0.029 (0.023) | 0.016 |
+| 1000 | 0.068 (0.066) | 0.016 |
+| 2000 | 0.148 (0.129) | 0.053 |
+| 3000 | 0.219 (0.207) [0.193 (0.178) in the 10k-run, different BC/pairs] | 0.090 |
+| 6000 | 0.283 (0.271) | - |
+| 10000 | 0.365 (0.359) | - |
+
+Success keeps rising roughly log-linearly with pairs and reaches the single-token oracle level (0.31-0.34 at N=500) at 10000 pairs. The memorisation problem is a data-quantity problem for the raw trajectory context. Note the 3000-pair point differs between runs (0.219 vs 0.193): run-to-run noise from retraining BC / re-collecting is ~0.03.
