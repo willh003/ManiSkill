@@ -1,6 +1,7 @@
 """Oracle sanity check for icl_paired.py: reuse its 500 saved pairs, but the context is ONE token that holds only the true hole pose
 (hole position, cos/sin yaw; states / actions zero), queries masked. If the pipeline is sound this should approach the visible-goal BC
-trained on the same 500 success trajectories. Run: python icl_paired_oracle.py [--out-dir ...]; reads logs/runs/icl-paired-s1/data.pt."""
+trained on the same 500 success trajectories. Run: python icl_paired_oracle.py [src_run [out_run [sizes]]]; defaults runs/icl-paired-s1, runs/icl-paired-oracle, 100,200,500."""
+import sys
 import time
 import gymnasium as gym
 import torch
@@ -17,9 +18,9 @@ from run_logging import LOG_ROOT, RunDir
 
 args = ip.Args()
 dev = torch.device("cuda")
-src = LOG_ROOT / "runs/icl-paired-s1"
+src = LOG_ROOT / (sys.argv[1] if len(sys.argv) > 1 else "runs/icl-paired-s1")
 P = {k: v.to(dev) for k, v in torch.load(src / "data.pt").items()}
-run = RunDir(str(LOG_ROOT / "runs/icl-paired-oracle"), args)
+run = RunDir(str(LOG_ROOT / (sys.argv[2] if len(sys.argv) > 2 else "runs/icl-paired-oracle")), args)
 N, K = args.num_envs, len(P["sd"])
 env = gym.make("PegInsertionSideBias-v1", num_envs=N, obs_mode="state", control_mode="pd_joint_delta_pos", sim_backend="physx_cuda")
 env = FlattenActionSpaceWrapper(env) if isinstance(env.action_space, gym.spaces.Dict) else env
@@ -80,7 +81,7 @@ ex = rollout(venv, expert, None, args, eval_goals, args.eval_seed, "expert")
 ectx = oracle_ctx(ex["y"][:, 0])
 res = dict(expert=ex["succ"].float().mean().item())
 print(f"expert {res['expert']:.3f}", flush=True)
-for n in (100, 200, 500):
+for n in [int(x) for x in (sys.argv[3] if len(sys.argv) > 3 else "100,200,500").split(",")]:
     t0 = time.time()
     po, lo = train(n, True)
     pv, lv = train(n, False)

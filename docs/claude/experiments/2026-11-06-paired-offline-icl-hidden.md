@@ -60,3 +60,14 @@ Runs `logs/runs/icl-paired-big` (3000 pairs; strides 5 and 100; log `logs/icl-pa
 | 10000 | 0.365 (0.359) | - |
 
 Success keeps rising roughly log-linearly with pairs and reaches the single-token oracle level (0.31-0.34 at N=500) at 10000 pairs. The memorisation problem is a data-quantity problem for the raw trajectory context. Note the 3000-pair point differs between runs (0.219 vs 0.193): run-to-run noise from retraining BC / re-collecting is ~0.03.
+
+## Oracle context at scale (2026-11-07)
+`python icl_paired_oracle.py runs/icl-paired-huge runs/icl-paired-oracle-huge 1000,3000,10000` (results `logs/runs/icl-paired-oracle-huge/results.json`, log `logs/icl-paired-oracle-huge.log`). Same eval configs as the trajectory-context runs; expert 0.900.
+
+| pairs | oracle-context student | visible-goal BC | shuffled / no ctx | trajectory-ctx student (stride 5 pass@2) |
+|---|---|---|---|---|
+| 1000 | 0.553 | 0.594 | 0.004 / 0.000 | 0.068 |
+| 3000 | 0.738 | 0.725 | 0.000 / 0.000 | 0.193-0.219 |
+| 10000 | 0.705 | 0.787 | 0.004 / 0.000 | 0.365 |
+
+The oracle student tracks the visible-goal BC (ceiling ~0.7-0.8, one seed, single eval set so +-0.03 noise) and the trajectory-context student is still far below it (0.365 vs ~0.7 at 10000 pairs), so the gap to ceiling is 2x, down from ~10x at 500 pairs.
