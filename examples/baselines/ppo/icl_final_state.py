@@ -127,26 +127,45 @@ def main():
     e_peg = EO[torch.arange(E), final_idx(EA)][:, PEG]  # expert final peg pose per demo
     if args.ctx_kind == "hole":
         e_peg = EO[:, 0, 35:42]
+    NV = 200
+    vo, vl, va, have, b = [], [], [], 0, 0
+    while have < NV:  # held-out expert demos (never used for training), for validation loss
+        r = rollout(venv, expert, None, args, full(N), args.seed * 100000 + 30000 + b * 20, "expert")
+        ok = r["succ"].nonzero()[:, 0]
+        vo.append(r["obs"][ok]), vl.append(r["lab"][ok]), va.append(r["alive"][ok])
+        have += len(ok)
+        b += 1
+    VO, VL, VA = (torch.cat(x)[:NV] for x in (vo, vl, va))
+    v_peg = VO[torch.arange(NV), final_idx(VA)][:, PEG] if args.ctx_kind != "hole" else VO[:, 0, 35:42]
+    VQ = apply_mask(VO, allm(NV))
     EQ = apply_mask(EO, allm(E))  # hidden-goal queries
 
-    def fit(pol, q, ctxf, steps_):
+    def fit(pol, q, ctxf, steps_, curve=None, val=None):
         """ctxf(idx) -> (c, valid) or None. MSE to expert actions on masked/visible queries q (E_,T,43) of the demos given by ctxf's demo index."""
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps_, eta_min=args.lr * 0.02)
-        for _ in range(steps_):
+        for it in range(steps_):
             idx, e_idx, c, v = ctxf()
             pred = pol(q[e_idx], c, v)
             m = Ealive[e_idx]
             loss = (((pred - EL[e_idx]) ** 2).mean(-1) * m).sum() / m.sum().clamp_min(1.0)
             opt.zero_grad(), loss.backward()
-            nn.utils.clip_grad_norm_(pol.parameters(), 1.0)
+            gn = nn.utils.clip_grad_norm_(pol.parameters(), 1.0)
             opt.step(), sched.step()
+            if curve is not None and it % 20 == 0:
+                curve.append((it, loss.item(), gn.item(), val(pol) if val else float('nan')))
         pol.eval()
         return loss.item()
 
     bc = MLP(A, 0, args.hidden).to(dev)
     bc.set_norm(EO)
-    bc_loss = fit(bc, EO, lambda: (None, (i := torch.randint(0, E, (args.batch_size,), device=dev)), None, None), args.steps)
+    def val_bc(pol):
+        with torch.no_grad():
+            m = VA.float()
+            return ((((pol(VO, None, None) - VL) ** 2).mean(-1) * m).sum() / m.sum()).item()
+
+    curves = dict(bc=[])
+    bc_loss = fit(bc, EO, lambda: (None, (i := torch.randint(0, E, (args.batch_size,), device=dev)), None, None), args.steps, curves["bc"], val_bc)
     torch.save(bc.state_dict(), run.ckpt("bc-visible.pt"))
     print(f"visible-goal MLP BC on {E} demos: final loss {bc_loss:.5f}", flush=True)
 
@@ -162,18 +181,29 @@ def main():
     # ---- 2. BC rollouts from uniform configs (final states), once for the largest N
     ns = [int(x) for x in args.ns.split(",")]
     F_state, F_peg, F_succ, have, b = [], [], [], 0, 0
-    while have < max(ns):
+    while have < max(ns) + 2000:  # last 2000 are held out for the validation loss
         r = rollout(venv, expert, bc, args, full(N), args.seed * 100000 + 60000 + b * 20, "student", dummy(N, 1), mask_pose=False)
         fi = final_idx(r["alive"])
         fs = r["obs"][torch.arange(N), fi]
         F_state.append(apply_mask(fs, allm(N))), F_peg.append(fs[:, PEG]), F_succ.append(r["succ"])
         have += N
         b += 1
-    F_state, F_peg, F_succ = (torch.cat(x)[: max(ns)] for x in (F_state, F_peg, F_succ))
+    F_state, F_peg, F_succ = (torch.cat(x)[: max(ns) + 2000] for x in (F_state, F_peg, F_succ))
     print(f"{len(F_state)} BC rollouts from uniform configs; BC solves {F_succ.float().mean():.3f} of them", flush=True)
     torch.save(dict(F_state=F_state.cpu(), F_peg=F_peg.cpu(), F_succ=F_succ.cpu(), e_peg=e_peg.cpu()), f"{run.path}/rollouts.pt")
 
     # ---- 3. ICL student per N
+    VF_ids = torch.arange(max(ns), max(ns) + 2000, device=dev)
+    ve = torch.arange(NV, device=dev).repeat(5)  # 1000 fixed (val demo, val rollout) pairs
+    vj = VF_ids[torch.randint(0, 2000, (len(ve),), device=dev)]
+
+    def val_icl(pol):
+        with torch.no_grad():
+            c = mk(F_state[vj], F_peg[vj], v_peg[ve])
+            m = VA[ve].float()
+            pred = pol(VQ[ve], c, torch.ones(len(ve), dtype=torch.bool, device=dev))
+            return ((((pred - VL[ve]) ** 2).mean(-1) * m).sum() / m.sum()).item()
+
     for n in ns:
         torch.manual_seed(args.seed * 100 + n)
         e_of = torch.randint(0, E, (n,), device=dev)  # random expert demo for every suboptimal rollout
@@ -191,7 +221,9 @@ def main():
                 return j, e, mk(F_state[j], F_peg[j], e_peg[e]), v
             return j, e_of[j], C[j], v
 
-        loss = fit(pol, EQ, sample, args.steps)
+        curves[f"N{n}"] = []
+        loss = fit(pol, EQ, sample, args.steps, curves[f"N{n}"], val_icl)
+        run.save_json("curves.json", curves)
         e1 = rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", dummy(N, CD), mask_pose=True)
         f1 = e1["obs"][torch.arange(N), final_idx(e1["alive"])]
         C2 = mk(apply_mask(f1, allm(N)), f1[:, PEG], ex_peg)

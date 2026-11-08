@@ -34,3 +34,10 @@ Pose-context student (ctx-drop 0), pass@2 / attempt 2 / no-ctx / shuffled:
 | 30000 | 0.135 | 0.129 | 0.008 / 0.016 | 0.00310 |
 
 Works at small N (0.42, above the goal-peg-pose-only reference 0.35) but gets WORSE with more rollouts, and train loss rises with N. Hypothesis: with few distinct final poses the MLP memorises them and uses the correction alone; with many it must learn the exact sum final+correction within 6000 steps and underfits (not tested). Next: add the explicit sum (goal pose) as an input, or train longer for large N.
+
+## Train/val curves (pose context, ctx-drop 0; 2026-11-07)
+Run `logs/runs/icl-final-pose-curves` (curves.json, plot `plots/curves.png`, copy `logs/renders/final-state/curves.png`; script `icl_final_state_curves.py`). Val set = 200 held-out expert demos (never trained on); ICL val pairs each with held-out BC rollouts (last 2000 of the rollout pool, 1000 fixed pairs).
+- Final train / val action MSE: BC 0.0017 / 0.0099; ICL N=100 0.0030 / 0.0118; N=1000 0.0029 / 0.0099; N=30000 0.0034 / 0.0110.
+- Train loss still falling at step 6000 (partial underfit), but val loss plateaus by ~2000-3000 steps at ~0.010-0.012 for BC and all ICL runs: train/val gap ~4-6x = overfitting to the 500 expert demos. Longer training would only lower train loss.
+- Val loss does NOT worsen with N (N=30000 ~ N=1000), so the "success falls with N because 6000 steps underfit the sum" hypothesis is not supported by val loss. Grad-norm spike at N=30000 around step 1300.
+- Success in this rerun: pass@2 0.182 (N=100), 0.260 (N=1000), 0.168 (N=30000) vs 0.420 / 0.395 / 0.135 in the earlier run of the same config (only difference: extra held-out data collection changed the global RNG stream). Run-to-run noise is huge, so the earlier monotone decline with N is not reliable; need several seeds per N.
