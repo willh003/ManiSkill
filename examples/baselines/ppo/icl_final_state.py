@@ -37,6 +37,10 @@ class Args:
     batch_size: int = 128
     lr: float = 3e-4
     hidden: int = 512
+    ctx_kind: str = "state"
+    """state: context = [masked final state (43), correction (7)]; pose: [final peg pose (7), correction (7)] (no final state);
+    goal: [expert final peg pose = goal pose (7)] only (oracle reference, ignores the BC rollouts);
+    hole: [true hole pose (7, obs 35:42)] only (same, with the exact hole pose as the goal vector)"""
     resample: bool = True
     """draw a fresh random expert demo for every suboptimal rollout in every batch (False: one fixed random pairing per rollout)"""
     ctx_drop: float = 0.5
@@ -106,7 +110,8 @@ def main():
     allm = lambda k: torch.ones(k, dtype=torch.bool, device=dev)
     sc = lambda e: e["succ"].float().mean().item()
     dummy = lambda n, d: dict(s=torch.zeros(n, 1, 43, device=dev), a=torch.zeros(n, 1, A, device=dev), y=torch.zeros(n, 1, d, device=dev), valid=torch.zeros(n, 1, dtype=torch.bool, device=dev))
-    CD = 50
+    CD = dict(state=50, pose=14, goal=7, hole=7)[args.ctx_kind]
+    mk = lambda fs, fp, ep: ep if args.ctx_kind in ("goal", "hole") else (torch.cat([fp, ep - fp], -1) if args.ctx_kind == "pose" else torch.cat([fs, ep - fp], -1))
 
     # ---- 1. expert demos + visible-goal BC
     ob, lb, al, have, b = [], [], [], 0, 0
@@ -120,6 +125,8 @@ def main():
     Ealive = EA.float()
     E = len(EO)
     e_peg = EO[torch.arange(E), final_idx(EA)][:, PEG]  # expert final peg pose per demo
+    if args.ctx_kind == "hole":
+        e_peg = EO[:, 0, 35:42]
     EQ = apply_mask(EO, allm(E))  # hidden-goal queries
 
     def fit(pol, q, ctxf, steps_):
@@ -147,7 +154,7 @@ def main():
     g = torch.Generator(device=dev).manual_seed(args.eval_seed)
     eval_goals = full(N, g)
     ex = rollout(venv, expert, None, args, eval_goals, args.eval_seed, "expert")
-    ex_peg = ex["obs"][torch.arange(N), final_idx(ex["alive"])][:, PEG]
+    ex_peg = ex["obs"][:, 0, 35:42] if args.ctx_kind == "hole" else ex["obs"][torch.arange(N), final_idx(ex["alive"])][:, PEG]
     bc_eval = sc(rollout(venv, expert, bc, args, eval_goals, args.eval_seed, "student", dummy(N, 1), mask_pose=False))
     results = dict(expert=sc(ex), bc_visible=bc_eval, bc_loss=bc_loss, runs={})
     print(f"eval: expert {sc(ex):.3f}, visible-goal BC (500 demos) {bc_eval:.3f}", flush=True)
@@ -170,22 +177,24 @@ def main():
     for n in ns:
         torch.manual_seed(args.seed * 100 + n)
         e_of = torch.randint(0, E, (n,), device=dev)  # random expert demo for every suboptimal rollout
-        C = torch.cat([F_state[:n], e_peg[e_of] - F_peg[:n]], -1)  # (n, 50)
+        C = mk(F_state[:n], F_peg[:n], e_peg[e_of])  # (n, CD)
+        jn, en = torch.randint(0, n, (5000,), device=dev), torch.randint(0, E, (5000,), device=dev)
+        Cn = mk(F_state[jn], F_peg[jn], e_peg[en])  # random pairings, for normalisation
         pol = MLP(A, CD, args.hidden).to(dev)
-        pol.set_norm(EQ, C)
+        pol.set_norm(EQ, Cn)
 
         def sample():
             j = torch.randint(0, n, (args.batch_size,), device=dev)
             v = torch.rand(args.batch_size, device=dev) >= args.ctx_drop
             if args.resample:
                 e = torch.randint(0, E, (args.batch_size,), device=dev)
-                return j, e, torch.cat([F_state[j], e_peg[e] - F_peg[j]], -1), v
+                return j, e, mk(F_state[j], F_peg[j], e_peg[e]), v
             return j, e_of[j], C[j], v
 
         loss = fit(pol, EQ, sample, args.steps)
         e1 = rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", dummy(N, CD), mask_pose=True)
         f1 = e1["obs"][torch.arange(N), final_idx(e1["alive"])]
-        C2 = torch.cat([apply_mask(f1, allm(N)), ex_peg - f1[:, PEG]], -1)
+        C2 = mk(apply_mask(f1, allm(N)), f1[:, PEG], ex_peg)
         ctx2 = dict(s=torch.zeros(N, 1, 43, device=dev), a=torch.zeros(N, 1, A, device=dev), y=C2[:, None], valid=torch.ones(N, 1, dtype=torch.bool, device=dev))
         out = dict(pass1=sc(e1), loss=loss)
         for name in ("normal", "no_ctx", "shuf"):
