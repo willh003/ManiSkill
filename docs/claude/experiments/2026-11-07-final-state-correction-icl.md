@@ -41,3 +41,12 @@ Run `logs/runs/icl-final-pose-curves` (curves.json, plot `plots/curves.png`, cop
 - Train loss still falling at step 6000 (partial underfit), but val loss plateaus by ~2000-3000 steps at ~0.010-0.012 for BC and all ICL runs: train/val gap ~4-6x = overfitting to the 500 expert demos. Longer training would only lower train loss.
 - Val loss does NOT worsen with N (N=30000 ~ N=1000), so the "success falls with N because 6000 steps underfit the sum" hypothesis is not supported by val loss. Grad-norm spike at N=30000 around step 1300.
 - Success in this rerun: pass@2 0.182 (N=100), 0.260 (N=1000), 0.168 (N=30000) vs 0.420 / 0.395 / 0.135 in the earlier run of the same config (only difference: extra held-out data collection changed the global RNG stream). Run-to-run noise is huge, so the earlier monotone decline with N is not reliable; need several seeds per N.
+
+## 12000 steps (2x), pose context, ctx-drop 0 (2026-11-08)
+Run `logs/runs/icl-final-pose-12k` (log `logs/icl-final-pose-12k.log`, curves `plots/curves.png`; `--steps 12000` also applies to the BC baseline). Eval: expert 0.900, visible-goal BC 0.549 (0.459 at 6000 steps).
+| N | pass@2 | attempt 2 | no ctx / shuf | final train / val MSE |
+|---|---|---|---|---|
+| 100 | 0.502 | 0.500 | 0.004 / 0.006 | 0.0008 / 0.0093 |
+| 1000 | 0.324 | 0.320 | 0.008 / 0.014 | 0.0009 / 0.0101 |
+| 30000 | 0.223 | 0.221 | 0.004 / 0.008 | 0.0010 / 0.0106 |
+BC final train / val 0.0006 / 0.0099. Train loss drops ~3x vs 6000 steps (0.003 -> 0.0009) but val loss is unchanged (min val reached ~step 6000 and flat after): the extra steps only widen the train/val gap (10x). Success across the three pose-context runs (pass@2, N=100/1000/30000): 6000 steps run A 0.42/0.40/0.14, run B 0.18/0.26/0.17, 12000 steps 0.50/0.32/0.22: N=100 ranges 0.18-0.50 between runs, so differences < ~0.15 are noise; the 12k improvement is not established, nor is the decline with N (though all three runs have N=100 >= N=30000 on average).
