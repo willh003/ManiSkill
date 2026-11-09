@@ -50,3 +50,9 @@ Run `logs/runs/icl-final-pose-12k` (log `logs/icl-final-pose-12k.log`, curves `p
 | 1000 | 0.324 | 0.320 | 0.008 / 0.014 | 0.0009 / 0.0101 |
 | 30000 | 0.223 | 0.221 | 0.004 / 0.008 | 0.0010 / 0.0106 |
 BC final train / val 0.0006 / 0.0099. Train loss drops ~3x vs 6000 steps (0.003 -> 0.0009) but val loss is unchanged (min val reached ~step 6000 and flat after): the extra steps only widen the train/val gap (10x). Success across the three pose-context runs (pass@2, N=100/1000/30000): 6000 steps run A 0.42/0.40/0.14, run B 0.18/0.26/0.17, 12000 steps 0.50/0.32/0.22: N=100 ranges 0.18-0.50 between runs, so differences < ~0.15 are noise; the 12k improvement is not established, nor is the decline with N (though all three runs have N=100 >= N=30000 on average).
+
+## 20k-step N=1000 run with eval every 1k steps (2026-11-09)
+Question: is the "worse with more steps / N" pattern undertraining? Run: `icl_final_state.py --ctx-kind pose --ctx-drop 0 --ns 1000 --steps 20000 --eval-every 1000 --out-dir logs/runs/icl-final-pose-20k` (cosine LR over 20k, so mid-run evals are at un-annealed LR). Trace: `trace.json`; plots: `plots/trace.png` (success vs step), `plots/curves.png` (train/val loss). Log `logs/icl-final-pose-20k.log`.
+- Visible-goal BC (success every 1k): 0.22@1k, 0.36@2k, 0.41@3k, 0.45@5k, 0.52@7k, 0.555@8k, then flat 0.54-0.58 to 20k. Final eval 0.566; expert 0.895.
+- ICL N=1000 pass@2: 0.11@1k, 0.26@2k, 0.40@4k, 0.44@7-10k, 0.47-0.49@12-15k, 0.50-0.52@16-19k, 0.47@20k. Final controlled eval: pass@2 0.498 (attempt2 0.496), no_ctx 0.006, shuf 0.004. Val MSE bottoms at 0.0091 (~step 8k) and drifts to 0.0095; train MSE 0.00035.
+- Reading: earlier 6k-step runs WERE undertrained for success (N=1000 was 0.32 at 12k in the previous run, 0.40 at 6k here; success keeps rising to ~0.5 while val MSE is flat/slightly worse). At 20k N=1000 matches the visible BC (0.50 vs 0.57), i.e. no ICL-specific gap remains. Single-eval noise is ~±0.03-0.05 here.

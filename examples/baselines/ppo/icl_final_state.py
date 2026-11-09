@@ -34,6 +34,7 @@ class Args:
     num_envs: int = 512
     num_steps: int = 100
     steps: int = 6000
+    eval_every: int = 0  # >0: evaluate success every this many grad steps (stored in results['trace'])
     batch_size: int = 128
     lr: float = 3e-4
     hidden: int = 512
@@ -140,7 +141,7 @@ def main():
     VQ = apply_mask(VO, allm(NV))
     EQ = apply_mask(EO, allm(E))  # hidden-goal queries
 
-    def fit(pol, q, ctxf, steps_, curve=None, val=None):
+    def fit(pol, q, ctxf, steps_, curve=None, val=None, hook=None):
         """ctxf(idx) -> (c, valid) or None. MSE to expert actions on masked/visible queries q (E_,T,43) of the demos given by ctxf's demo index."""
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
         sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps_, eta_min=args.lr * 0.02)
@@ -154,6 +155,8 @@ def main():
             opt.step(), sched.step()
             if curve is not None and it % 20 == 0:
                 curve.append((it, loss.item(), gn.item(), val(pol) if val else float('nan')))
+            if hook is not None and args.eval_every > 0 and (it + 1) % args.eval_every == 0:
+                hook(pol, it + 1)
         pol.eval()
         return loss.item()
 
@@ -165,13 +168,24 @@ def main():
             return ((((pol(VO, None, None) - VL) ** 2).mean(-1) * m).sum() / m.sum()).item()
 
     curves = dict(bc=[])
-    bc_loss = fit(bc, EO, lambda: (None, (i := torch.randint(0, E, (args.batch_size,), device=dev)), None, None), args.steps, curves["bc"], val_bc)
+    trace = dict(bc=[])
+
+    def bc_hook(pol, it):
+        pol.eval()
+        sc_ = sc(rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", dummy(N, 1), mask_pose=False))
+        pol.train()
+        trace["bc"].append((it, sc_))
+        run.save_json("trace.json", trace)
+        print(f"  [bc] step {it}: success {sc_:.3f}", flush=True)
+
+    # eval set (needed by the hooks)
+    g = torch.Generator(device=dev).manual_seed(args.eval_seed)
+    eval_goals = full(N, g)
+    bc_loss = fit(bc, EO, lambda: (None, (i := torch.randint(0, E, (args.batch_size,), device=dev)), None, None), args.steps, curves["bc"], val_bc, bc_hook)
     torch.save(bc.state_dict(), run.ckpt("bc-visible.pt"))
     print(f"visible-goal MLP BC on {E} demos: final loss {bc_loss:.5f}", flush=True)
 
     # ---- eval set + references
-    g = torch.Generator(device=dev).manual_seed(args.eval_seed)
-    eval_goals = full(N, g)
     ex = rollout(venv, expert, None, args, eval_goals, args.eval_seed, "expert")
     ex_peg = ex["obs"][:, 0, 35:42] if args.ctx_kind == "hole" else ex["obs"][torch.arange(N), final_idx(ex["alive"])][:, PEG]
     bc_eval = sc(rollout(venv, expert, bc, args, eval_goals, args.eval_seed, "student", dummy(N, 1), mask_pose=False))
@@ -222,7 +236,22 @@ def main():
             return j, e_of[j], C[j], v
 
         curves[f"N{n}"] = []
-        loss = fit(pol, EQ, sample, args.steps, curves[f"N{n}"], val_icl)
+        trace[f"N{n}"] = []
+
+        def icl_hook(pl, it):
+            pl.eval()
+            a1 = rollout(venv, expert, pl, args, eval_goals, args.eval_seed, "student", dummy(N, CD), mask_pose=True)
+            g1 = a1["obs"][torch.arange(N), final_idx(a1["alive"])]
+            c2 = mk(apply_mask(g1, allm(N)), g1[:, PEG], ex_peg)
+            cx = dict(s=torch.zeros(N, 1, 43, device=dev), a=torch.zeros(N, 1, A, device=dev), y=c2[:, None], valid=torch.ones(N, 1, dtype=torch.bool, device=dev))
+            a2 = rollout(venv, expert, pl, args, eval_goals, args.eval_seed, "student", cx, "normal", mask_pose=True)
+            r = (it, sc(a1), (a1["succ"] | a2["succ"]).float().mean().item(), sc(a2), val_icl(pl))
+            pl.train()
+            trace[f"N{n}"].append(r)
+            run.save_json("trace.json", trace)
+            print(f"  [N={n}] step {it}: pass@1 {r[1]:.3f} pass@2 {r[2]:.3f} attempt2 {r[3]:.3f} val {r[4]:.5f}", flush=True)
+
+        loss = fit(pol, EQ, sample, args.steps, curves[f"N{n}"], val_icl, icl_hook)
         run.save_json("curves.json", curves)
         e1 = rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", dummy(N, CD), mask_pose=True)
         f1 = e1["obs"][torch.arange(N), final_idx(e1["alive"])]
