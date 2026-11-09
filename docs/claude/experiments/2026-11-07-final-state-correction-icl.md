@@ -56,3 +56,9 @@ Question: is the "worse with more steps / N" pattern undertraining? Run: `icl_fi
 - Visible-goal BC (success every 1k): 0.22@1k, 0.36@2k, 0.41@3k, 0.45@5k, 0.52@7k, 0.555@8k, then flat 0.54-0.58 to 20k. Final eval 0.566; expert 0.895.
 - ICL N=1000 pass@2: 0.11@1k, 0.26@2k, 0.40@4k, 0.44@7-10k, 0.47-0.49@12-15k, 0.50-0.52@16-19k, 0.47@20k. Final controlled eval: pass@2 0.498 (attempt2 0.496), no_ctx 0.006, shuf 0.004. Val MSE bottoms at 0.0091 (~step 8k) and drifts to 0.0095; train MSE 0.00035.
 - Reading: earlier 6k-step runs WERE undertrained for success (N=1000 was 0.32 at 12k in the previous run, 0.40 at 6k here; success keeps rising to ~0.5 while val MSE is flat/slightly worse). At 20k N=1000 matches the visible BC (0.50 vs 0.57), i.e. no ICL-specific gap remains. Single-eval noise is ~±0.03-0.05 here.
+
+## 3 seeds x N={100,1000,30000} at 20k steps (2026-11-09)
+`icl_final_state.py --ctx-kind pose --ctx-drop 0 --ns 100,1000,30000 --steps 20000 --eval-every 5000 --seed {1,2,3}`; runs `logs/runs/icl-final-pose-20k-s{1,2,3}`, logs `logs/icl-final-pose-20k-s*.log`, aggregate plot `logs/renders/final-state/seeds-20k.png` (`icl_final_state_seeds.py`). Seeds change the 500 demos, BC, rollouts and init; the 512 eval configs are fixed.
+Final pass@2 (per seed; mean, sd): visible BC .562/.549/.529 (.547); N=100 .535/.490/.469 (.498, .034); N=1000 .455/.363/.449 (.423, .051); N=30000 .301/.328/.307 (.312, .014). Controls (no_ctx, shuf) <= 0.02.
+Convergence (mean pass@2 at 5k/10k/15k/20k): N=100 .38/.45/.48/.50; N=1000 .32/.39/.41/.42; N=30000 .23/.28/.29/.31. Still creeping up slightly at 20k, gains over the last 5k are ~0.01-0.02 (<noise).
+Reading: the decline with N is real and consistent across seeds (N=30000 is below N=100 in every seed, ~0.19 gap vs sd ~0.03), not undertraining. The 6k-step undertraining explained the gap to the BC, not the trend with N.
