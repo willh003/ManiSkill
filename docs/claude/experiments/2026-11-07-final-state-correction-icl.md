@@ -62,3 +62,8 @@ Question: is the "worse with more steps / N" pattern undertraining? Run: `icl_fi
 Final pass@2 (per seed; mean, sd): visible BC .562/.549/.529 (.547); N=100 .535/.490/.469 (.498, .034); N=1000 .455/.363/.449 (.423, .051); N=30000 .301/.328/.307 (.312, .014). Controls (no_ctx, shuf) <= 0.02.
 Convergence (mean pass@2 at 5k/10k/15k/20k): N=100 .38/.45/.48/.50; N=1000 .32/.39/.41/.42; N=30000 .23/.28/.29/.31. Still creeping up slightly at 20k, gains over the last 5k are ~0.01-0.02 (<noise).
 Reading: the decline with N is real and consistent across seeds (N=30000 is below N=100 in every seed, ~0.19 gap vs sd ~0.03), not undertraining. The 6k-step undertraining explained the gap to the BC, not the trend with N.
+
+## Plateau check: 60k steps, constant LR, 3 seeds (2026-11-09)
+`icl_final_state.py --ctx-kind pose --ctx-drop 0 --ns 1000,30000 --steps 60000 --const-lr --eval-every 5000 --seed {1,2,3}`; runs `logs/runs/icl-final-pose-60k-const-s{1,2,3}` (`trace.json` has success every 5k; only final checkpoints saved). Constant LR so mid-run evals are not confounded by cosine annealing. (The user's "1000 and 3000" read as N=1000 and N=30000.)
+Mean pass@2 over 3 seeds at 5k/10k/15k/20k/30k/40k/50k/60k: N=1000 .35/.41/.43/.43/.44/.42/.44/.45; N=30000 .26/.31/.31/.33/.29/.30/.31/.28. Visible BC .45/.50/.53/.53/.53/.56/.56/.53.
+Reading: plateau by ~15-25k steps for every model; nothing improves from 25k to 60k (differences <= 0.03, within eval noise ~0.03-0.05). Per-N gap persists (N=1000 ~0.44 vs N=30000 ~0.30), so the decline with N is not an optimisation-time artefact. Train loss goes to 1e-4 while val MSE stays ~0.0095-0.019 (noisy at const LR).

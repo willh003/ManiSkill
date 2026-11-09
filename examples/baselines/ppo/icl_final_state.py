@@ -34,6 +34,7 @@ class Args:
     num_envs: int = 512
     num_steps: int = 100
     steps: int = 6000
+    const_lr: bool = False  # constant LR (no cosine decay): mid-run evals then reflect a true plateau
     eval_every: int = 0  # >0: evaluate success every this many grad steps (stored in results['trace'])
     batch_size: int = 128
     lr: float = 3e-4
@@ -144,7 +145,7 @@ def main():
     def fit(pol, q, ctxf, steps_, curve=None, val=None, hook=None):
         """ctxf(idx) -> (c, valid) or None. MSE to expert actions on masked/visible queries q (E_,T,43) of the demos given by ctxf's demo index."""
         opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps_, eta_min=args.lr * 0.02)
+        sched = torch.optim.lr_scheduler.ConstantLR(opt, factor=1.0, total_iters=1) if args.const_lr else torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=steps_, eta_min=args.lr * 0.02)
         for it in range(steps_):
             idx, e_idx, c, v = ctxf()
             pred = pol(q[e_idx], c, v)
