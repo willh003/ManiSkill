@@ -70,3 +70,15 @@ Reading: plateau by ~15-25k steps for every model; nothing improves from 25k to 
 
 ## Context data distribution, N=100 vs N=30000 (2026-11-10)
 `icl_final_state_dist.py logs/runs/icl-final-pose-20k-s1/rollouts.pt logs/renders/final-state/dist-N100-N30000.png 100,30000`. N=100 is a prefix of N=30000. BC solves 46% of the first 100 vs 56% of 30000. Correction (random expert final peg - BC final peg) has median |corr| ~0.2 m in both; <3% under 5 cm; N=30000 has rare flung pegs (max 21 m). N=100 is a sparse sample of the same shape: BC successes fill the goal box uniformly, failures spill to y<-0.1 and |x|>0.2.
+
+## Why does pass@2 fall with N? Diagnostics + context-variant grid (2026-11-10)
+Question: the data distributions at N=100 and N=30000 look the same (`logs/renders/final-state/dist-N100-N30000.png`), so why is N=30000 worse? All scripts in `examples/baselines/ppo/icl_final_state*.py`, code commits 593ee1e, dd7b15e.
+1. **Test-time f is not the issue** (`icl_final_state_diag.py`, 20k-step ckpts, seed 1): replacing the student's attempt-1 final peg f by a random BC final f or a constant leaves attempt-2 success unchanged (N=100 .52/.50/.51/.52; N=1000 .47/.46/.47/.46; N=30000 .28/.28/.29/.29). N=30000 stays ~.28 even with constant f (c fully determines e), so the model is worse at reading e from [f, c], not at handling OOD f.
+2. **Outliers matter**: 26/32768 BC rollouts end with the peg flung >1 m (|c| up to 21 m); they inflate the context std (f xy std .17-.25 vs .10-.13 at N=100). `--drop-outliers` (runs `icl-diag-dropout-outliers*`, 3 seeds, pose ctx, rollout-based norm): N=30000 pass@2 ~.44 (.453/.457/.422) vs ~.31 without.
+3. **Explicit sum fixes it**: ctx=[f, c, f+c] (`icl-diag-pose-sum`, seed 1): N=100 .457, N=30000 .564 (= visible BC .56).
+4. **Grid with N-independent normalisation** (`--ctx-norm expert`: mean/std from the 500 expert demos' own final poses/states with random pairings, normalised ctx clipped to +-5; runs `logs/runs/icl-norm-{pose,pose_sum,state}-s{1,2,3}`, 20k steps cosine, eval every 5k; plot `logs/renders/final-state/grid-norm.png`; tracker artifact experiment `icl-final-state-norm`). Final pass@2 mean over 3 seeds (sd), N=100/1000/30000:
+   - pose [f, c]: .488 (.007) / .410 (.060) / .343 (.038)
+   - pose_sum [f, c, f+c]: .523 (.036) / .523 (.041) / .505 (.024)
+   - state [final state, c]: .505 (.045) / .488 (.010) / .435 (.023)
+   - visible-goal BC per seed .562/.549/.520 (mean .544). no_ctx/shuf controls <= .02.
+Reading: normalisation alone does NOT remove the decline for plain pose (.49 -> .34), so stats were not the whole story. Giving the net the explicit goal estimate f+c removes it (flat ~.51, close to BC .54). The decline with N is therefore an in-network difficulty of computing e = f + c as N (and the spread/tails of f) grows, not a data-distribution or test-shift effect. Open: outlier-dropping fixed plain pose but clipping did not; untested whether it is the clipped outlier samples or something else (next: pose + expert norm + drop-outliers).
