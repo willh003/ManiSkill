@@ -43,6 +43,9 @@ class Args:
     """state: context = [masked final state (43), correction (7)]; pose: [final peg pose (7), correction (7)] (no final state);
     goal: [expert final peg pose = goal pose (7)] only (oracle reference, ignores the BC rollouts);
     hole: [true hole pose (7, obs 35:42)] only (same, with the exact hole pose as the goal vector)"""
+    ctx_norm: str = "rollouts"
+    """rollouts: context mean/std from the N BC rollouts (depends on N, inflated by flung pegs); expert: fixed stats from the 500 expert demos' own final states/poses with random pairings (independent of N); values clipped to +-5 std"""
+    drop_outliers: bool = False  # drop BC rollouts whose final peg is >1 m from the origin (flung pegs inflate normalisation stats)
     resample: bool = True
     """draw a fresh random expert demo for every suboptimal rollout in every batch (False: one fixed random pairing per rollout)"""
     ctx_drop: float = 0.5
@@ -57,6 +60,7 @@ class MLP(nn.Module):
     def __init__(self, A, cdim, hidden):
         super().__init__()
         self.cdim = cdim
+        self.clip = None  # if set, clamp normalised context to +-clip
         self.register_buffer("s_mean", torch.zeros(43)), self.register_buffer("s_std", torch.ones(43))
         self.register_buffer("c_mean", torch.zeros(max(cdim, 1))), self.register_buffer("c_std", torch.ones(max(cdim, 1)))
         d_in = 43 + (1 + cdim if cdim else 0)
@@ -72,7 +76,10 @@ class MLP(nn.Module):
         x = (s - self.s_mean) / self.s_std
         if self.cdim:
             B, extra = x.shape[0], [1] * (x.dim() - 2)
-            cn = (((c - self.c_mean) / self.c_std) * valid.float()[:, None]).view(B, *extra, self.cdim).expand(*x.shape[:-1], self.cdim)
+            cn = (c - self.c_mean) / self.c_std
+            if self.clip:
+                cn = cn.clamp(-self.clip, self.clip)
+            cn = (cn * valid.float()[:, None]).view(B, *extra, self.cdim).expand(*x.shape[:-1], self.cdim)
             vf = valid.float().view(B, *extra, 1).expand(*x.shape[:-1], 1)
             x = torch.cat([x, vf, cn], -1)
         return self.net(x)
@@ -112,8 +119,8 @@ def main():
     allm = lambda k: torch.ones(k, dtype=torch.bool, device=dev)
     sc = lambda e: e["succ"].float().mean().item()
     dummy = lambda n, d: dict(s=torch.zeros(n, 1, 43, device=dev), a=torch.zeros(n, 1, A, device=dev), y=torch.zeros(n, 1, d, device=dev), valid=torch.zeros(n, 1, dtype=torch.bool, device=dev))
-    CD = dict(state=50, pose=14, goal=7, hole=7)[args.ctx_kind]
-    mk = lambda fs, fp, ep: ep if args.ctx_kind in ("goal", "hole") else (torch.cat([fp, ep - fp], -1) if args.ctx_kind == "pose" else torch.cat([fs, ep - fp], -1))
+    CD = dict(state=50, pose=14, pose_sum=21, goal=7, hole=7)[args.ctx_kind]
+    mk = lambda fs, fp, ep: ep if args.ctx_kind in ("goal", "hole") else (torch.cat([fp, ep - fp], -1) if args.ctx_kind == "pose" else (torch.cat([fp, ep - fp, ep], -1) if args.ctx_kind == "pose_sum" else torch.cat([fs, ep - fp], -1)))
 
     # ---- 1. expert demos + visible-goal BC
     ob, lb, al, have, b = [], [], [], 0, 0
@@ -127,6 +134,8 @@ def main():
     Ealive = EA.float()
     E = len(EO)
     e_peg = EO[torch.arange(E), final_idx(EA)][:, PEG]  # expert final peg pose per demo
+    e_peg_fin = e_peg.clone()  # expert final peg pose (kept even for ctx_kind hole)
+    E_fs = apply_mask(EO[torch.arange(E), final_idx(EA)], torch.ones(E, dtype=torch.bool, device=dev))  # masked expert final states
     if args.ctx_kind == "hole":
         e_peg = EO[:, 0, 35:42]
     NV = 200
@@ -196,14 +205,19 @@ def main():
     # ---- 2. BC rollouts from uniform configs (final states), once for the largest N
     ns = [int(x) for x in args.ns.split(",")]
     F_state, F_peg, F_succ, have, b = [], [], [], 0, 0
-    while have < max(ns) + 2000:  # last 2000 are held out for the validation loss
+    while have < max(ns) + 2000 + (300 if args.drop_outliers else 0):  # last 2000 are held out for the validation loss
         r = rollout(venv, expert, bc, args, full(N), args.seed * 100000 + 60000 + b * 20, "student", dummy(N, 1), mask_pose=False)
         fi = final_idx(r["alive"])
         fs = r["obs"][torch.arange(N), fi]
         F_state.append(apply_mask(fs, allm(N))), F_peg.append(fs[:, PEG]), F_succ.append(r["succ"])
         have += N
         b += 1
-    F_state, F_peg, F_succ = (torch.cat(x)[: max(ns) + 2000] for x in (F_state, F_peg, F_succ))
+    F_state, F_peg, F_succ = (torch.cat(x) for x in (F_state, F_peg, F_succ))
+    if args.drop_outliers:
+        keep = F_peg[:, :3].abs().amax(1) < 1.0
+        print(f"dropping {(~keep).sum().item()} of {len(keep)} rollouts with final peg > 1 m away", flush=True)
+        F_state, F_peg, F_succ = F_state[keep], F_peg[keep], F_succ[keep]
+    F_state, F_peg, F_succ = (x[: max(ns) + 2000] for x in (F_state, F_peg, F_succ))
     print(f"{len(F_state)} BC rollouts from uniform configs; BC solves {F_succ.float().mean():.3f} of them", flush=True)
     torch.save(dict(F_state=F_state.cpu(), F_peg=F_peg.cpu(), F_succ=F_succ.cpu(), e_peg=e_peg.cpu()), f"{run.path}/rollouts.pt")
 
@@ -224,9 +238,15 @@ def main():
         e_of = torch.randint(0, E, (n,), device=dev)  # random expert demo for every suboptimal rollout
         C = mk(F_state[:n], F_peg[:n], e_peg[e_of])  # (n, CD)
         jn, en = torch.randint(0, n, (5000,), device=dev), torch.randint(0, E, (5000,), device=dev)
-        Cn = mk(F_state[jn], F_peg[jn], e_peg[en])  # random pairings, for normalisation
+        if args.ctx_norm == "expert":  # N-independent: expert final states/poses as the reference "BC rollouts"
+            jr, er = torch.randint(0, E, (5000,), device=dev), torch.randint(0, E, (5000,), device=dev)
+            Cn = mk(E_fs[jr], e_peg_fin[jr], e_peg[er])
+        else:
+            Cn = mk(F_state[jn], F_peg[jn], e_peg[en])  # random pairings, for normalisation
         pol = MLP(A, CD, args.hidden).to(dev)
         pol.set_norm(EQ, Cn)
+        if args.ctx_norm == "expert":
+            pol.clip = 5.0
 
         def sample():
             j = torch.randint(0, n, (args.batch_size,), device=dev)
