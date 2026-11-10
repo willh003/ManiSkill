@@ -1,6 +1,6 @@
 """Convert icl_final_state run dirs into ArtifactData docs: metrics/<run-id> {series:{...}} and lastMetrics.
 Usage: python scripts/artifact_metrics.py OUT_DIR run_dir [run_dir ...]   (writes OUT_DIR/<run-id>.metrics.json and OUT_DIR/<run-id>.last.json)"""
-import json, os, sys
+import datetime, json, os, sys
 out = sys.argv[1]; os.makedirs(out, exist_ok=True)
 for d in sys.argv[2:]:
     rid = os.path.basename(d.rstrip("/"))
@@ -23,5 +23,6 @@ for d in sys.argv[2:]:
             S[f"train_loss_{k}"] = [[x[0], x[1]] for x in v[::5]]
             S[f"val_loss_{k}"] = [[x[0], x[3]] for x in v[::5]]
     json.dump(dict(series=S), open(f"{out}/{rid}.metrics.json", "w"))
-    json.dump(dict(lastMetrics=last), open(f"{out}/{rid}.last.json", "w"))
+    now = datetime.datetime.now().astimezone().isoformat(timespec="seconds")
+    json.dump(dict(lastMetrics=last, heartbeat=now, updated=now), open(f"{out}/{rid}.last.json", "w"))
     print(rid, last)
