@@ -80,5 +80,5 @@ Question: the data distributions at N=100 and N=30000 look the same (`logs/rende
    - pose [f, c]: .488 (.007) / .410 (.060) / .343 (.038)
    - pose_sum [f, c, f+c]: .523 (.036) / .523 (.041) / .505 (.024)
    - state [final state, c]: .505 (.045) / .488 (.010) / .435 (.023)
-   - visible-goal BC per seed .562/.549/.520 (mean .544). no_ctx/shuf controls <= .02.
+   - visible-goal BC per seed .562/.549/.529 (mean .547). no_ctx/shuf controls <= .02.
 Reading: normalisation alone does NOT remove the decline for plain pose (.49 -> .34), so stats were not the whole story. Giving the net the explicit goal estimate f+c removes it (flat ~.51, close to BC .54). The decline with N is therefore an in-network difficulty of computing e = f + c as N (and the spread/tails of f) grows, not a data-distribution or test-shift effect. Open: outlier-dropping fixed plain pose but clipping did not; untested whether it is the clipped outlier samples or something else (next: pose + expert norm + drop-outliers).

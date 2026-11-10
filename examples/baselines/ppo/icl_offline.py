@@ -47,8 +47,15 @@ class Args:
     """feedback: per-step (hole - head, head, cos/sin yaw) | expert_action: the expert's action (true goal) at each context state"""
     hide_goal: bool = False
     """the hole pose is masked (zeros + flag) in every query and context state, in training and eval; the goal is only recoverable from the context's feedback / expert actions"""
+    methods: str = "bc,icl"
+    eval_unmasked: bool = False
+    """with --hide-goal: also evaluate the trained policy with the goal visible (mask_pose=False) on both attempts"""
     log_every: int = 0
     """log train loss and held-out val loss (expert-action MSE on the eval goals, no context) every this many steps"""
+    save_data: bool = False
+    """save the collected optimal/suboptimal trajectories to <out_dir>/data.pt"""
+    collect_only: bool = False
+    """stop after collection (implies nothing is trained)"""
     split: str = "wide_corner"
     """only used for its xy / yaw range; goals come from region 'all'"""
 
@@ -109,6 +116,11 @@ def main():
     opt = {k: torch.cat(v)[:K] for k, v in OPT.items()}
     ctx = {k: torch.cat(v)[:K] for k, v in CTX.items()}
     sub_len = 100.0
+    if args.save_data:
+        torch.save(dict(opt={k: v.cpu() for k, v in opt.items()}, ctx={k: v.cpu() for k, v in ctx.items()}, expert_success=nsucc / ntot), f"{run.path}/data.pt")
+        print("saved data", flush=True)
+    if args.collect_only:
+        return
 
     if args.hide_goal:
         allm = torch.ones(K, dtype=torch.bool, device=device)
@@ -135,18 +147,19 @@ def main():
         policy.train()
         return v.item()
 
-    def evaluate(policy, icl, ctx_mode="normal"):
+    def evaluate(policy, icl, ctx_mode="normal", mask=None):
+        mask = args.hide_goal if mask is None else mask
         policy.eval()
-        e1 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "student", empty_ctx(N, Tc, A, device), mask_pose=args.hide_goal)
+        e1 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed, "student", empty_ctx(N, Tc, A, device), mask_pose=mask)
         if args.ctx_feedback == "expert_action":
             e1["y"] = e1["lab"]
         e2 = rollout(venv, expert, policy, args, eval_goals, args.eval_seed + 1, "student", make_ctx(e1, args.ctx_stride),
-                     ctx_mode if icl else "no_ctx", mask_pose=args.hide_goal)
+                     ctx_mode if icl else "no_ctx", mask_pose=mask)
         return dict(pass1=e1["succ"].float().mean().item(), pass2=(e1["succ"] | e2["succ"]).float().mean().item(), attempt2=e2["succ"].float().mean().item())
 
     results = dict(expert_ref=ref, suboptimal_len=sub_len, runs={})
     for n in sizes:
-        for method in ("bc", "icl"):
+        for method in args.methods.split(","):
             icl = method == "icl"
             torch.manual_seed(args.seed * 100 + n)
             policy = Policy(A, Tc, args).to(device)
@@ -173,11 +186,14 @@ def main():
                 if args.log_every and (_ + 1) % args.log_every == 0:
                     print(f"  [{method} N={n}] step {_+1} train {loss.item():.5f} val {val_loss(policy):.5f}", flush=True)
             res = dict(loss=loss.item(), val_loss=val_loss(policy), eval=evaluate(policy, icl))
+            torch.save(policy.state_dict(), run.ckpt(f"{method}-{n}.pt"))
+            if args.eval_unmasked:
+                res["eval_unmasked"] = evaluate(policy, icl, mask=False)
             if icl:
                 res["controls"] = {cm: evaluate(policy, icl, cm) for cm in ("no_ctx", "shuf_y", "no_y")}
             results["runs"][f"{method}-{n}"] = res
             print(f"N={n:4d} {method:3s} loss {res['loss']:.4f} pass@1 {res['eval']['pass1']:.3f} pass@2 {res['eval']['pass2']:.3f} ({time.time()-t0:.0f}s)"
-                  + (f" | ctrl pass@2 " + " ".join(f"{k} {v['pass2']:.3f}" for k, v in res["controls"].items()) if icl else ""), flush=True)
+                  + (f" | ctrl pass@2 " + " ".join(f"{k} {v['pass2']:.3f}" for k, v in res["controls"].items()) if icl else "") + (f" | UNMASKED pass@1 {res['eval_unmasked']['pass1']:.3f} pass@2 {res['eval_unmasked']['pass2']:.3f}" if args.eval_unmasked else ""), flush=True)
             run.save_json("results.json", results)
 
 
