@@ -25,7 +25,7 @@ from run_logging import LOG_ROOT, RunDir
 
 PEG = slice(25, 32)
 NH = 10  # history frames: steps 0,10,...,90
-LAYOUT = dict(fcfc=3, fcfc_hist=3 + NH, hist_c=NH + 2, hist_c_noisy=NH + 2)
+LAYOUT = dict(hole=1, goal=1, fcfc=3, fcfc_hist=3 + NH, hist_c=NH + 2, hist_c_noisy=NH + 2)
 
 
 @dataclass
@@ -118,6 +118,8 @@ def hist_of(obs, fi):
 
 def mk(kind, hist, fp, g, s):
     c = (g - fp) * s[:, None]
+    if kind in ("hole", "goal"):  # oracle references: the goal vector alone (g is the exact hole pose for `hole`)
+        return g[:, None]
     if kind == "fcfc":
         return torch.stack([fp, c, fp + c], 1)
     if kind == "fcfc_hist":
@@ -268,7 +270,7 @@ def main():
     rs = lambda n, noisy: (args.noise_lo + (args.noise_hi - args.noise_lo) * torch.rand(n, device=dev)) if noisy else one(n)
 
     # ---- eval: recursive attempts
-    def attempts(pol, kind, K, noisy, ctx_mode="normal", shuffle=False):
+    def attempts(pol, kind, K, noisy, ctx_mode="normal", shuffle=False, x_g=None):
         L = LAYOUT[kind]
         out, r = [], None
         for k in range(1, K + 1):
@@ -278,7 +280,7 @@ def main():
             else:
                 fi = final_idx(r["alive"])
                 fp = r["obs"][torch.arange(N), fi][:, PEG]
-                c = mk(kind, hist_of(r["obs"], fi), fp, ex_peg, rs(N, noisy))
+                c = mk(kind, hist_of(r["obs"], fi), fp, ex_peg if x_g is None else x_g, rs(N, noisy))
                 if shuffle:
                     c = torch.roll(c, 1, 0)
                 ctx = dict(s=torch.zeros(N, 1, 43, device=dev), a=torch.zeros(N, 1, A, device=dev), y=c.reshape(N, 1, -1), valid=torch.ones(N, 1, dtype=torch.bool, device=dev))
@@ -302,14 +304,16 @@ def main():
     # ---- 3. ICL students
     kinds = args.kinds.split(",")
     trace, curves = {}, {}
+    e_hole, v_hole, ex_hole = EO[:, 0, 35:42], VO[:, 0, 35:42], ex["obs"][:, 0, 35:42]
     for kind in kinds:
+        e_g, v_g, x_g = (e_hole, v_hole, ex_hole) if kind == "hole" else (e_peg, v_peg, ex_peg)
         L, noisy = LAYOUT[kind], kind == "hist_c_noisy"
         for n in ns:
             torch.manual_seed(args.seed * 100 + n)
             key = f"{kind}-N{n}"
             Es = torch.randint(0, E, (5000,), device=dev)
             Ej = torch.randint(0, E, (5000,), device=dev)
-            Cn = mk(kind, E_hist[Ej], e_peg[Ej], e_peg[Es], one(5000))  # N-independent norm stats from the expert demos
+            Cn = mk(kind, E_hist[Ej], e_peg[Ej], e_g[Es], one(5000))  # N-independent norm stats from the expert demos
             pol = TF(A, L, args.d, args.layers, args.heads, args.dropout).to(dev)
             pol.set_norm(EQ)
             pol.c_mean.copy_(Cn.mean(0)), pol.c_std.copy_(Cn.std(0).clamp_min(1e-3))
@@ -317,12 +321,12 @@ def main():
             def sample():
                 j = torch.randint(0, n, (args.batch_size,), device=dev)
                 e = torch.randint(0, E, (args.batch_size,), device=dev)
-                return e, mk(kind, F_hist[j], F_peg[j], e_peg[e], rs(args.batch_size, noisy)), torch.ones(args.batch_size, dtype=torch.bool, device=dev)
+                return e, mk(kind, F_hist[j], F_peg[j], e_g[e], rs(args.batch_size, noisy)), torch.ones(args.batch_size, dtype=torch.bool, device=dev)
 
             def val_icl(p):
                 p.eval()
                 with torch.no_grad():
-                    c = mk(kind, F_hist[vj], F_peg[vj], v_peg[ve], rs(len(ve), noisy))
+                    c = mk(kind, F_hist[vj], F_peg[vj], v_g[ve], rs(len(ve), noisy))
                     tot = den = 0.0
                     for i in range(0, len(ve), 100):
                         sl = slice(i, i + 100)
@@ -338,7 +342,7 @@ def main():
 
             def hook(p, it):
                 p.eval()
-                s = summarize(attempts(p, kind, 2, noisy))
+                s = summarize(attempts(p, kind, 2, noisy, x_g=x_g))
                 trace[key].append((it, s["succ"][0], s["pass_k"][1], s["succ"][1], val_icl(p)))
                 run.save_json("trace.json", trace)
                 print(f"  [{key}] step {it}: pass@1 {s['succ'][0]:.3f} pass@2 {s['pass_k'][1]:.3f} att2 {s['succ'][1]:.3f}", flush=True)
@@ -347,10 +351,10 @@ def main():
             loss = fit(pol, EQ, sample, args.steps, curves[key], val_icl, hook)
             run.save_json("curves.json", curves)
             torch.save(pol.state_dict(), run.ckpt(f"{key}.pt"))
-            res = summarize(attempts(pol, kind, args.K, noisy))
+            res = summarize(attempts(pol, kind, args.K, noisy, x_g=x_g))
             res["loss"], res["val"] = loss, val_icl(pol)
             for name, kw in (("no_ctx", dict(ctx_mode="no_ctx")), ("shuf", dict(shuffle=True))):
-                res[f"{name}_pass2"] = summarize(attempts(pol, kind, 2, noisy, **kw))["pass_k"][1]
+                res[f"{name}_pass2"] = summarize(attempts(pol, kind, 2, noisy, x_g=x_g, **kw))["pass_k"][1]
             results["runs"][key] = res
             run.save_json("results.json", results)
             print(f"{key}: pass@k {[round(x, 3) for x in res['pass_k']]} dist_best {[round(x, 3) for x in res['dist_best']]} | no_ctx {res['no_ctx_pass2']:.3f} shuf {res['shuf_pass2']:.3f} | loss {loss:.5f} val {res['val']:.5f} ({time.time() - t0:.0f}s)", flush=True)
