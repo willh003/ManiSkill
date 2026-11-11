@@ -82,3 +82,8 @@ Question: the data distributions at N=100 and N=30000 look the same (`logs/rende
    - state [final state, c]: .505 (.045) / .488 (.010) / .435 (.023)
    - visible-goal BC per seed .562/.549/.529 (mean .547). no_ctx/shuf controls <= .02.
 Reading: normalisation alone does NOT remove the decline for plain pose (.49 -> .34), so stats were not the whole story. Giving the net the explicit goal estimate f+c removes it (flat ~.51, close to BC .54). The decline with N is therefore an in-network difficulty of computing e = f + c as N (and the spread/tails of f) grows, not a data-distribution or test-shift effect. Open: outlier-dropping fixed plain pose but clipping did not; untested whether it is the clipped outlier samples or something else (next: pose + expert norm + drop-outliers).
+
+## Check: plain `pose` + expert-stat norm + drop-outliers (3 seeds, 20k steps)
+Runs `logs/runs/icl-norm-pose-do-s{1,2,3}` (`scripts/run_pose_dropout.sh`). Final pass@2, N=1000 / N=30000:
+s1 .414/.354, s2 .363/.330, s3 .508/.412 -> mean **.428 / .365** (BC .547). Without dropping (same norm): .410 / .343.
+Conclusion: dropping the 26 flung rollouts does nothing once the norm is N-independent, so outlier samples are not the cause of the decline. The earlier lift (N=30000 -> ~.44) came from dropping under the *rollout-stat* norm, i.e. via changed normalisation scale. Decline for plain `pose` persists; explicit f+c (`pose_sum`) remains the only fix found.
