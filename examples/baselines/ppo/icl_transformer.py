@@ -25,7 +25,7 @@ from run_logging import LOG_ROOT, RunDir
 
 PEG = slice(25, 32)
 NH = 10  # history frames: steps 0,10,...,90
-LAYOUT = dict(hole=1, goal=1, fcfc=3, fcfc_hist=3 + NH, hist_c=NH + 2, hist_c_noisy=NH + 2)
+LAYOUT = dict(hole=1, goal=1, fc=2, fcfc=3, fcfc_hist=3 + NH, hist_c=NH + 2, hist_c_noisy=NH + 2)
 
 
 @dataclass
@@ -120,6 +120,8 @@ def mk(kind, hist, fp, g, s):
     c = (g - fp) * s[:, None]
     if kind in ("hole", "goal"):  # oracle references: the goal vector alone (g is the exact hole pose for `hole`)
         return g[:, None]
+    if kind == "fc":  # diagnostic: [f, c] only (no f+c, no history)
+        return torch.stack([fp, c], 1)
     if kind == "fcfc":
         return torch.stack([fp, c, fp + c], 1)
     if kind == "fcfc_hist":
