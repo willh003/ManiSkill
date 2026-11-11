@@ -52,12 +52,15 @@ class Args:
     eval_seed: int = 12345
     split: str = "wide_corner"
     skip_bc: bool = False  # skip transformer BC (T0)
+    dropout: float = 0.0
+    wd: float = 0.0
+    fp32: bool = False
 
 
 class TF(nn.Module):
     """action = head(Encoder([obs token, ctx tokens])[obs]). L = number of context pose tokens (0 -> BC). forward(s (B,T,43), c (B,L,7) raw, valid (B,))."""
 
-    def __init__(self, A, L, d, layers, heads):
+    def __init__(self, A, L, d, layers, heads, dropout=0.0):
         super().__init__()
         self.L, self.A = L, A
         self.register_buffer("s_mean", torch.zeros(43)), self.register_buffer("s_std", torch.ones(43))
@@ -67,7 +70,7 @@ class TF(nn.Module):
         if L:
             self.tok_proj = nn.Linear(7, d)
             self.slot_emb = nn.Parameter(torch.randn(L, d) * 0.02)
-        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True, activation="gelu")
+        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=dropout, batch_first=True, norm_first=True, activation="gelu")
         self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, A))
 
@@ -183,13 +186,13 @@ def main():
     results = dict(expert=sc(ex), runs={})
 
     def fit(pol, q, ctxf, steps_, curve, val, hook):
-        opt = torch.optim.Adam(pol.parameters(), lr=args.lr)
+        opt = torch.optim.AdamW(pol.parameters(), lr=args.lr, weight_decay=args.wd)
         lam = lambda it: min(1.0, (it + 1) / args.warmup) * (0.02 + 0.98 * 0.5 * (1 + math.cos(math.pi * it / steps_)))
         sched = torch.optim.lr_scheduler.LambdaLR(opt, lam)
         pol.train()
         for it in range(steps_):
             e_idx, c, v = ctxf()
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=not args.fp32):
                 pred = pol(q[e_idx], c, v).float()
             m = Ealive[e_idx]
             loss = (((pred - EL[e_idx]) ** 2).mean(-1) * m).sum() / m.sum().clamp_min(1.0)
@@ -206,7 +209,7 @@ def main():
 
     # ---- T0: transformer BC
     if not args.skip_bc:
-        bc = TF(A, 0, args.d, args.layers, args.heads).to(dev)
+        bc = TF(A, 0, args.d, args.layers, args.heads, args.dropout).to(dev)
         bc.set_norm(EO)
         curves, trace = dict(bc=[]), dict(bc=[])
 
@@ -307,7 +310,7 @@ def main():
             Es = torch.randint(0, E, (5000,), device=dev)
             Ej = torch.randint(0, E, (5000,), device=dev)
             Cn = mk(kind, E_hist[Ej], e_peg[Ej], e_peg[Es], one(5000))  # N-independent norm stats from the expert demos
-            pol = TF(A, L, args.d, args.layers, args.heads).to(dev)
+            pol = TF(A, L, args.d, args.layers, args.heads, args.dropout).to(dev)
             pol.set_norm(EQ)
             pol.c_mean.copy_(Cn.mean(0)), pol.c_std.copy_(Cn.std(0).clamp_min(1e-3))
 
