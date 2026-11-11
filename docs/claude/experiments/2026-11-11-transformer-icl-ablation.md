@@ -52,3 +52,6 @@ Val = 200 held-out expert demos paired with held-out BC rollouts (last 2000 of t
 | 10000 | noisy | .025 / .074 / .135 | .146 / .092 | .165 / .168 |
 | 10000 | shuf | .012 / .028 / .048 | .200 / .136 | .269 / .284 |
 Reading: (1) oracle ~= noisy at every N and k, so the 10% scale noise is not what limits C; its failure is the same as B's (the model cannot turn history + c into a good goal estimate). (2) Shuffled context is clearly worse (per-attempt distance .26-.39 vs .14-.21) so the context is genuinely used, just poorly. (3) Even with the exact correction the per-attempt distance does not shrink with k (e.g. N=100 .140 -> .156): no iterative refinement; the drop in best-so-far distance is a best-of-k effect. The no-context control is attempt 1 repeated (deterministic policy), pass@2 <= .016 (main table).
+
+## Checkpoints
+Every plotted run has a local checkpoint: `logs/runs/icl-tf-<kind>-s<seed>/checkpoints/<kind>-N<N>.pt` for kind in fcfc, fcfc_hist, hist_c, hist_c_noisy, seed 1-3, N 100/1000/10000 (36 files), plus the transformer-BC `tf-bc.pt` in each `icl-tf-fcfc-s*` run; MLP N=10000 refs in `logs/runs/icl-norm-pose_sum-N10000-s*/checkpoints`. Seeds 2-3 were trained on klone and pulled with `scripts/cluster/pull.sh`.
