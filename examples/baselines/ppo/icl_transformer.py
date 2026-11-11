@@ -94,6 +94,8 @@ class TF(nn.Module):
 
     # adapter for icl_checker.rollout: ctx y is (B,1,L*7), validity (B,1)
     def encode(self, cs, ca, cy, cv):
+        if not self.L:
+            return (None, None), None
         return (cy[:, 0].reshape(-1, self.L, 7), cv[:, 0]), None
 
     def decode(self, x, memory, pad):
@@ -187,7 +189,8 @@ def main():
         pol.train()
         for it in range(steps_):
             e_idx, c, v = ctxf()
-            pred = pol(q[e_idx], c, v)
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                pred = pol(q[e_idx], c, v).float()
             m = Ealive[e_idx]
             loss = (((pred - EL[e_idx]) ** 2).mean(-1) * m).sum() / m.sum().clamp_min(1.0)
             opt.zero_grad(), loss.backward()
@@ -305,7 +308,7 @@ def main():
             Ej = torch.randint(0, E, (5000,), device=dev)
             Cn = mk(kind, E_hist[Ej], e_peg[Ej], e_peg[Es], one(5000))  # N-independent norm stats from the expert demos
             pol = TF(A, L, args.d, args.layers, args.heads).to(dev)
-            pol.set_norm(EQ, Cn.mean(0)[None].expand(1, -1, -1)[0] if False else None)
+            pol.set_norm(EQ)
             pol.c_mean.copy_(Cn.mean(0)), pol.c_std.copy_(Cn.std(0).clamp_min(1e-3))
 
             def sample():
@@ -317,8 +320,14 @@ def main():
                 p.eval()
                 with torch.no_grad():
                     c = mk(kind, F_hist[vj], F_peg[vj], v_peg[ve], rs(len(ve), noisy))
-                    m = VA[ve].float()
-                    r = ((((p(VQ[ve], c, torch.ones(len(ve), dtype=torch.bool, device=dev)) - VL[ve]) ** 2).mean(-1) * m).sum() / m.sum()).item()
+                    tot = den = 0.0
+                    for i in range(0, len(ve), 100):
+                        sl = slice(i, i + 100)
+                        m = VA[ve[sl]].float()
+                        pr = p(VQ[ve[sl]], c[sl], torch.ones(len(m), dtype=torch.bool, device=dev))
+                        tot += (((pr - VL[ve[sl]]) ** 2).mean(-1) * m).sum().item()
+                        den += m.sum().item()
+                    r = tot / den
                 p.train()
                 return r
 
