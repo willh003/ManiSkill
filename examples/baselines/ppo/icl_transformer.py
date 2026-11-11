@@ -37,14 +37,14 @@ class Args:
     kinds: str = "fcfc,fcfc_hist,hist_c,hist_c_noisy"
     num_envs: int = 512
     num_steps: int = 100
-    steps: int = 20000
+    steps: int = 10000
     warmup: int = 500
     eval_every: int = 5000
     K: int = 8  # max attempts at final eval
     batch_size: int = 128
     lr: float = 3e-4
-    d: int = 256
-    layers: int = 4
+    d: int = 128
+    layers: int = 2
     heads: int = 4
     noise_lo: float = 0.9
     noise_hi: float = 1.1
