@@ -37,3 +37,18 @@ Student's later attempts are off-distribution (trained only on BC failures). Mod
 
 ## Train/val loss (`logs/renders/icl-tf/loss_curves.png`, script `icl_transformer_loss_plot.py`)
 Val = 200 held-out expert demos paired with held-out BC rollouts (last 2000 of the pool; fixed pairs), action MSE, every run/seed/N overlaid. Train loss falls to ~1.4e-3 (T1, A) and ~2.4e-3 (B, C), independent of N. Val plateaus by ~3k steps at ~.011-.012 (T1, A) and ~.016-.018 (B, C); transformer BC val ~.009 (train 1.4e-3). So all models overfit the 500 demos (train/val gap 5-10x), and B/C have visibly worse val loss than T1/A, consistent with their poor goal recovery. Val loss does not change with N.
+
+## C per-k controls (oracle exact correction + shuffled context), 3 seeds (2026-11-11)
+`icl_transformer_controls.py` on the saved `hist_c_noisy` checkpoints (all N, seeds 1-3), raw `logs/runs/icl-tf-controls.json`, log `logs/icl-tf-controls.log`. Modes: **oracle** = exact correction s=1 at every attempt; **noisy** = s~U(.9,1.1) per attempt (re-run in the same script); **shuf** = another env's context at every attempt. Mean over seeds; attempt-dist = mean peg-goal distance of attempt k itself, best-dist = min over attempts <= k.
+| N | mode | pass@2 / @4 / @8 | best-dist @2 / @8 (m) | attempt-dist @2 / @8 (m) |
+|---|---|---|---|---|
+| 100 | oracle | .036 / .113 / .193 | .124 / .079 | .140 / .156 |
+| 100 | noisy | .037 / .122 / .202 | .125 / .077 | .141 / .160 |
+| 100 | shuf | .012 / .021 / .045 | .190 / .128 | .311 / .385 |
+| 1000 | oracle | .025 / .057 / .090 | .160 / .110 | .185 / .202 |
+| 1000 | noisy | .019 / .052 / .085 | .159 / .111 | .188 / .210 |
+| 1000 | shuf | .015 / .035 / .053 | .196 / .141 | .263 / .292 |
+| 10000 | oracle | .033 / .073 / .122 | .143 / .092 | .161 / .164 |
+| 10000 | noisy | .025 / .074 / .135 | .146 / .092 | .165 / .168 |
+| 10000 | shuf | .012 / .028 / .048 | .200 / .136 | .269 / .284 |
+Reading: (1) oracle ~= noisy at every N and k, so the 10% scale noise is not what limits C; its failure is the same as B's (the model cannot turn history + c into a good goal estimate). (2) Shuffled context is clearly worse (per-attempt distance .26-.39 vs .14-.21) so the context is genuinely used, just poorly. (3) Even with the exact correction the per-attempt distance does not shrink with k (e.g. N=100 .140 -> .156): no iterative refinement; the drop in best-so-far distance is a best-of-k effect. The no-context control is attempt 1 repeated (deterministic policy), pass@2 <= .016 (main table).
