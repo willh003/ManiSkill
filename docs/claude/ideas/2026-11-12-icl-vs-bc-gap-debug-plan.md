@@ -64,3 +64,6 @@ MLP [f,c,f+c] pass@2: .523/.523/.507; TF BC (hole visible) .833 pass@2-equivalen
 **Concat, 2000 demos (N=1000):** hole .881, goal .799, T1 .805 (BC 2000 demos .897).
 **Tokens, controls (N=1000, 500 demos):** no slot embeddings: hole .701, goal .503, T1 .340 (slot embeddings only matter for the 3-token layouts: T1 .504 -> .340); unnormalised context: hole .628, goal .523, T1 .480 (normalisation helps slightly for hole, not a cause of the gap).
 Ladder status: R0-R5, token order, slot embeddings, normalisation, training length, demo count and context pathway all run. Conclusion: ICL with separate context tokens was the bug-like bottleneck; concat closes the hole-pose gap completely and recovers most of T1; the rest is hole->g information (.88 -> .80 with 2000 demos) and data (500 demos).
+
+## Replotted with concat pathway (500 demos; `icl_requested_plots.py cat`)
+logs/renders/icl-tf/plot{1_t1_vs_bc,2_pass2_vs_N,3_variants}_cat.png (token-pathway originals without suffix). T1 pass@k reaches .82-.84 by k=8 (BC .85) with ~.70 at k=2; transformer T1 > MLP at every N (.69-.74 vs .51-.52) and neither depends on N; A, B, T1 overlap by k=4; C (noisy c) stays low (.60-.66 at k=8). The MLP concatenates its inputs by construction, so it is already at its "best pathway". 2000-demo full grid (A/B/C, MLP) not run.
