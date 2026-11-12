@@ -55,3 +55,12 @@ Reading: (1) oracle ~= noisy at every N and k, so the 10% scale noise is not wha
 
 ## Checkpoints
 Every plotted run has a local checkpoint: `logs/runs/icl-tf-<kind>-s<seed>/checkpoints/<kind>-N<N>.pt` for kind in fcfc, fcfc_hist, hist_c, hist_c_noisy, seed 1-3, N 100/1000/10000 (36 files), plus the transformer-BC `tf-bc.pt` in each `icl-tf-fcfc-s*` run; MLP N=10000 refs in `logs/runs/icl-norm-pose_sum-N10000-s*/checkpoints`. Seeds 2-3 were trained on klone and pulled with `scripts/cluster/pull.sh`.
+
+## BC pass@k (measured, k=1..8, 3 seeds; `icl_bc_passk.py` -> logs/runs/icl-bc-passk.json)
+BC = transformer BC trained on 500 expert demos (N in the ICL plan is the number of suboptimal rollouts, not BC demos). Retries use the same seed; the only variation is GPU-physics nondeterminism.
+| policy | pass@1 | pass@2 | pass@8 |
+|---|---|---|---|
+| TF BC, hole visible | .827 | .842 | .850 |
+| TF BC, hole hidden | 0 | 0 | 0 |
+| T1 ICL model, no context, hole hidden (N=100/1000/10000) | 0/.001/.002 | 0/.002/.002 | 0/.002/.002 |
+| T1 ICL with context (N=1000) | .001 | .504 | .712 |
