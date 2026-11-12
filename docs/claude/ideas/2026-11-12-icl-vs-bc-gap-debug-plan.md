@@ -21,3 +21,13 @@
 
 ## Order of work
 R0, R1 and the existing `fc` first (cheap, kinds already implemented: `hole`, `goal`, `fc`), at the adopted d=128/L=2/10k steps, 3 seeds. Then fill in R2 variants and the orthogonal checks only where a drop appears.
+
+## Results R0/R1/R3 (d=128, L=2, 10k steps, N=1000, 3 seeds; `scripts/run_icl_debug_r0.sh`, logs/runs/icl-tf-dbg-r0-s{1,2,3})
+| rung | context | pass@2 per seed | mean | pass@8 | val loss |
+|---|---|---|---|---|---|
+| ref | TF BC, hole in obs | .824/.838/.836 | .833 | - | .0087 |
+| R0 | `[hole pose]` | .717/.686/.703 | .702 | .744 | .0110 |
+| R1 | `[g]` (= `[f+c]`) | .490/.531/.527 | .516 | .571 | .0139 |
+| R3 | `[f, c]` | .244/.195/.244 | .228 | .550 | .0121 |
+| T1 | `[f, c, f+c]` | (main grid, N=1000) | .504 | .712 | |
+Reading: the ICL pathway already loses ~.13 vs BC with the exact hole pose as the only token (R0), loses another ~.19 going hole -> g (R1), and R1 ~= T1, so f and c add nothing. R3 shows computing f+c across tokens is learned poorly (pass@2 .23, although pass@8 .55 means it gets there with retries via attempt noise). Note g reaches the same hole-peg distance (.05) as hole (.04) at best-of-k, so g is informative; the issue is how reliably the policy uses it in one attempt. Next: orthogonal checks at R0 (normalisation, steps, 2000 demos, context pathway).
