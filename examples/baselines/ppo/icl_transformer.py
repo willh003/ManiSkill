@@ -56,6 +56,8 @@ class Args:
     dropout: float = 0.0
     wd: float = 0.0
     fp32: bool = False
+    no_slot: bool = False  # debug: zero, freeze the per-slot embeddings
+    no_cnorm: bool = False  # debug: raw (unnormalised) context
     cat: bool = False  # debug: concatenate the (flattened, normalised, validity-gated) context to the obs token instead of separate context tokens
 
 
@@ -336,6 +338,10 @@ def main():
             pol = TF(A, L, args.d, args.layers, args.heads, args.dropout, args.cat).to(dev)
             pol.set_norm(EQ)
             pol.c_mean.copy_(Cn.mean(0)), pol.c_std.copy_(Cn.std(0).clamp_min(1e-3))
+            if args.no_cnorm:
+                pol.c_mean.zero_(), pol.c_std.fill_(1.0)
+            if args.no_slot and L and not args.cat:
+                pol.slot_emb.data.zero_(), pol.slot_emb.requires_grad_(False)
 
             def sample():
                 j = torch.randint(0, n, (args.batch_size,), device=dev)

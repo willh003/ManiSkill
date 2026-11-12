@@ -6,5 +6,9 @@ case $tag in
  perm)  $P $S --kinds fg,rg,gf,cg,gfc,cfg --ns 1000 --skip-bc --seed $s --out-dir $out ;;
  cat)   $P $S --kinds hole,goal,fcfc --cat --ns 1000 --skip-bc --seed $s --out-dir $out ;;
  long)  $P $S --kinds hole,goal --steps 30000 --ns 1000 --skip-bc --seed $s --out-dir $out ;;
+ catabc) $P $S --kinds fcfc,fcfc_hist,hist_c,hist_c_noisy --cat --ns 100,1000,10000 --skip-bc --seed $s --out-dir $out ;;
+ catdemos) $P $S --kinds hole,goal,fcfc --cat --bc-demos 2000 --ns 1000 --seed $s --out-dir $out ;;
+ slot) $P $S --kinds hole,goal,fcfc --no-slot --ns 1000 --skip-bc --seed $s --out-dir $out ;;
+ cnorm) $P $S --kinds hole,goal,fcfc --no-cnorm --ns 1000 --skip-bc --seed $s --out-dir $out ;;
  demos) $P $S --kinds hole,goal --bc-demos 2000 --ns 1000 --seed $s --out-dir $out ;;
 esac > logs/icl-tf-dbg-$tag-s$s.log 2>&1
