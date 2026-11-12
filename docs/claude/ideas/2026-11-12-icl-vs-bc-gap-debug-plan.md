@@ -37,3 +37,17 @@ Reading: the ICL pathway already loses ~.13 vs BC with the exact hole pose as th
 - Longer training (30k steps) hurts: hole .650, goal .441 (memorisation).
 - Permutations with separate tokens, seed 1: [f,g] .426, [rand,g] .449, [g,f] .426 (extra token costs ~.09 vs [g] .52; correlation with g irrelevant; order irrelevant).
 Reading: the transformer encoder over [obs, ctx tokens] is a worse way to inject context than feeding it into the obs embedding; likely the obs token has to learn attention-based retrieval from few demos. 2000-demo runs and the remaining permutations pending.
+
+## Final results, batch 2 (3 seeds, N=1000, pass@2; `scripts/run_icl_debug_batch.sh`, logs/runs/icl-tf-dbg-{perm,cat,long,demos}-s*)
+| setup | pass@2 | pass@8 |
+|---|---|---|
+| TF BC hole visible (500 demos) | .833 | - |
+| **tokens** `[hole]` / `[g]` (R0/R1) | .702 / .516 | .744 / .571 |
+| tokens `[f,g]` / `[g,f]` / `[rand,g]` / `[c,g]` | .447 / .429 / .465 / .454 | .64 / .62 / .62 / .64 |
+| tokens `[g,f,c]` / `[c,f,g]` / T1 `[f,c,f+c]` | .514 / .511 / .504 | .71 / .71 / .71 |
+| tokens `[f,c]` (R3) | .228 | .550 |
+| **concat** `[hole]` / `[g]` / T1 | **.824** / .676 / .734 | .850 / .712 / .838 |
+| tokens, 30k steps `[hole]` / `[g]` | .664 / .436 | .718 / .508 |
+| tokens, **2000 demos** `[hole]` / `[g]` (BC 2000 demos: .897 TF, .839 MLP) | .880 / .758 | .898 / .784 |
+Findings: (1) the context-as-token pathway is the largest loss: exact hole pose via concat = BC (.824 vs .833), via tokens .702; (2) hole -> g costs ~.15-.19 in either pathway (g is the expert's final peg pose, not the hole); (3) extra tokens cost ~.06-.09 regardless of correlation or order; computing f+c from separate tokens is much harder ([f,c] .23) but [g,f,c]/[c,f,g] (g present) ~= T1; (4) longer training hurts (memorisation); (5) more expert demos help both (2000 demos: hole token .88).
+Implication: use `--cat` (or otherwise inject context at the obs embedding) for the ICL ablations, and more expert demos; T1/A/B/C numbers in the main grid are depressed by the token pathway. Not yet re-run: A/B/C and the MLP comparison under `--cat`.
