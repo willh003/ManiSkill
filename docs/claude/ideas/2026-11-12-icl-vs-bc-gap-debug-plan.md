@@ -31,3 +31,9 @@ R0, R1 and the existing `fc` first (cheap, kinds already implemented: `hole`, `g
 | R3 | `[f, c]` | .244/.195/.244 | .228 | .550 | .0121 |
 | T1 | `[f, c, f+c]` | (main grid, N=1000) | .504 | .712 | |
 Reading: the ICL pathway already loses ~.13 vs BC with the exact hole pose as the only token (R0), loses another ~.19 going hole -> g (R1), and R1 ~= T1, so f and c add nothing. R3 shows computing f+c across tokens is learned poorly (pass@2 .23, although pass@8 .55 means it gets there with retries via attempt noise). Note g reaches the same hole-peg distance (.05) as hole (.04) at best-of-k, so g is informative; the issue is how reliably the policy uses it in one attempt. Next: orthogonal checks at R0 (normalisation, steps, 2000 demos, context pathway).
+
+## Interim (seed 1 only, N=1000; seeds 2-3 still running via scripts/run_icl_debug_batch.sh, logs/icl-tf-dbg-{perm,cat,long,demos}-s*.log)
+- **Context pathway is the main culprit.** `--cat` (context concatenated to the obs token instead of separate context tokens): hole .826 (= BC .83), goal .684, T1 [f,c,f+c] .721, vs. separate tokens .70 / .52 / .50. 
+- Longer training (30k steps) hurts: hole .650, goal .441 (memorisation).
+- Permutations with separate tokens, seed 1: [f,g] .426, [rand,g] .449, [g,f] .426 (extra token costs ~.09 vs [g] .52; correlation with g irrelevant; order irrelevant).
+Reading: the transformer encoder over [obs, ctx tokens] is a worse way to inject context than feeding it into the obs embedding; likely the obs token has to learn attention-based retrieval from few demos. 2000-demo runs and the remaining permutations pending.
