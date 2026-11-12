@@ -51,3 +51,16 @@ Reading: the transformer encoder over [obs, ctx tokens] is a worse way to inject
 | tokens, **2000 demos** `[hole]` / `[g]` (BC 2000 demos: .897 TF, .839 MLP) | .880 / .758 | .898 / .784 |
 Findings: (1) the context-as-token pathway is the largest loss: exact hole pose via concat = BC (.824 vs .833), via tokens .702; (2) hole -> g costs ~.15-.19 in either pathway (g is the expert's final peg pose, not the hole); (3) extra tokens cost ~.06-.09 regardless of correlation or order; computing f+c from separate tokens is much harder ([f,c] .23) but [g,f,c]/[c,f,g] (g present) ~= T1; (4) longer training hurts (memorisation); (5) more expert demos help both (2000 demos: hole token .88).
 Implication: use `--cat` (or otherwise inject context at the obs embedding) for the ICL ablations, and more expert demos; T1/A/B/C numbers in the main grid are depressed by the token pathway. Not yet re-run: A/B/C and the MLP comparison under `--cat`.
+
+## Final results, batch 3 (3 seeds, pass@2 / pass@8; runs icl-tf-dbg-{catabc,catdemos,slot,cnorm}-s*)
+**Variants with the concat pathway (`--cat`, 500 demos)** vs tokens (main grid):
+| kind | N=100 | N=1000 | N=10000 | tokens N=1000 |
+|---|---|---|---|---|
+| T1 [f,c,f+c] | .688 / .82 | .738 / .84 | .697 / .83 | .504 / .71 |
+| A +history | .553 / .85 | .683 / .84 | .695 / .85 | .43 |
+| B history + c | .458 / .83 | .606 / .84 | .626 / .83 | .03 |
+| C B + noisy c | .163 / .60 | .266 / .65 | .282 / .66 | .03 |
+MLP [f,c,f+c] pass@2: .523/.523/.507; TF BC (hole visible) .833 pass@2-equivalent. Under concat the transformer T1 beats the MLP (.74 vs .52), A is close to T1 (hypothesis roughly holds at N>=1000), B drops ~.13 below T1 (partly supported: much better than tokens .03, but not "as good"), and C's scale noise now hurts a lot (.27) because the model can use c precisely. pass@8 of T1/A/B ~.83-.85, i.e. at the BC ceiling.
+**Concat, 2000 demos (N=1000):** hole .881, goal .799, T1 .805 (BC 2000 demos .897).
+**Tokens, controls (N=1000, 500 demos):** no slot embeddings: hole .701, goal .503, T1 .340 (slot embeddings only matter for the 3-token layouts: T1 .504 -> .340); unnormalised context: hole .628, goal .523, T1 .480 (normalisation helps slightly for hole, not a cause of the gap).
+Ladder status: R0-R5, token order, slot embeddings, normalisation, training length, demo count and context pathway all run. Conclusion: ICL with separate context tokens was the bug-like bottleneck; concat closes the hole-pose gap completely and recovers most of T1; the rest is hole->g information (.88 -> .80 with 2000 demos) and data (500 demos).
