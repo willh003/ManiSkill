@@ -25,7 +25,8 @@ from run_logging import LOG_ROOT, RunDir
 
 PEG = slice(25, 32)
 NH = 10  # history frames: steps 0,10,...,90
-LAYOUT = dict(hole=1, goal=1, fc=2, fcfc=3, fcfc_hist=3 + NH, hist_c=NH + 2, hist_c_noisy=NH + 2)
+LAYOUT = dict(hole=1, goal=1, fc=2, fcfc=3, fcfc_hist=3 + NH, hist_c=NH + 2, hist_c_noisy=NH + 2,
+              fg=2, rg=2, gf=2, cg=2, gfc=3, cfg=3)
 
 
 @dataclass
@@ -55,19 +56,20 @@ class Args:
     dropout: float = 0.0
     wd: float = 0.0
     fp32: bool = False
+    cat: bool = False  # debug: concatenate the (flattened, normalised, validity-gated) context to the obs token instead of separate context tokens
 
 
 class TF(nn.Module):
     """action = head(Encoder([obs token, ctx tokens])[obs]). L = number of context pose tokens (0 -> BC). forward(s (B,T,43), c (B,L,7) raw, valid (B,))."""
 
-    def __init__(self, A, L, d, layers, heads, dropout=0.0):
+    def __init__(self, A, L, d, layers, heads, dropout=0.0, cat=False):
         super().__init__()
-        self.L, self.A = L, A
+        self.L, self.A, self.cat = L, A, cat and L > 0
         self.register_buffer("s_mean", torch.zeros(43)), self.register_buffer("s_std", torch.ones(43))
         self.register_buffer("c_mean", torch.zeros(max(L, 1), 7)), self.register_buffer("c_std", torch.ones(max(L, 1), 7))
-        self.obs_proj = nn.Linear(43, d)
+        self.obs_proj = nn.Linear(43 + (7 * L if self.cat else 0), d)
         self.obs_emb = nn.Parameter(torch.zeros(d))
-        if L:
+        if L and not self.cat:
             self.tok_proj = nn.Linear(7, d)
             self.slot_emb = nn.Parameter(torch.randn(L, d) * 0.02)
         layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=dropout, batch_first=True, norm_first=True, activation="gelu")
@@ -83,8 +85,11 @@ class TF(nn.Module):
     def forward(self, s, c=None, valid=None):
         x = (s - self.s_mean) / self.s_std
         B, T = x.shape[:2]
+        if self.cat:
+            cn = ((c - self.c_mean) / self.c_std).clamp(-5, 5).reshape(B, 1, -1) * valid[:, None, None].float()
+            x = torch.cat([x, cn.expand(B, T, -1)], -1)
         o = (self.obs_proj(x) + self.obs_emb)[:, :, None]  # (B,T,1,d)
-        if self.L:
+        if self.L and not self.cat:
             cn = ((c - self.c_mean) / self.c_std).clamp(-5, 5)
             ct = self.tok_proj(cn) + self.slot_emb  # (B,L,d)
             seq = torch.cat([o, ct[:, None].expand(B, T, self.L, -1)], 2)
@@ -122,6 +127,18 @@ def mk(kind, hist, fp, g, s):
         return g[:, None]
     if kind == "fc":  # diagnostic: [f, c] only (no f+c, no history)
         return torch.stack([fp, c], 1)
+    if kind == "fg":
+        return torch.stack([fp, g], 1)
+    if kind == "rg":  # f of another sample (uncorrelated distractor)
+        return torch.stack([torch.roll(fp, 1, 0), g], 1)
+    if kind == "gf":
+        return torch.stack([g, fp], 1)
+    if kind == "cg":
+        return torch.stack([c, g], 1)
+    if kind == "gfc":
+        return torch.stack([g, fp, c], 1)
+    if kind == "cfg":
+        return torch.stack([c, fp, g], 1)
     if kind == "fcfc":
         return torch.stack([fp, c, fp + c], 1)
     if kind == "fcfc_hist":
@@ -316,7 +333,7 @@ def main():
             Es = torch.randint(0, E, (5000,), device=dev)
             Ej = torch.randint(0, E, (5000,), device=dev)
             Cn = mk(kind, E_hist[Ej], e_peg[Ej], e_g[Es], one(5000))  # N-independent norm stats from the expert demos
-            pol = TF(A, L, args.d, args.layers, args.heads, args.dropout).to(dev)
+            pol = TF(A, L, args.d, args.layers, args.heads, args.dropout, args.cat).to(dev)
             pol.set_norm(EQ)
             pol.c_mean.copy_(Cn.mean(0)), pol.c_std.copy_(Cn.std(0).clamp_min(1e-3))
 
