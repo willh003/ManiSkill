@@ -71,14 +71,16 @@ def run_k(pol, ctx, mask, kind_L):
     return dict(succ=s.float().mean(0).tolist(), pass_k=s.cummax(1).values.float().mean(0).tolist())
 
 
+PFX = sys.argv[2] if len(sys.argv) > 2 else "icl-tf-fcfc"  # run-dir prefix holding checkpoints/tf-bc.pt; if given, BC only
+OUTF = sys.argv[3] if len(sys.argv) > 3 else "icl-bc-passk.json"
 res = {}
 for s in seeds:
     pol = T.TF(A, 0, args.d, args.layers, args.heads, args.dropout).to(dev)
-    pol.load_state_dict(torch.load(f"{LOG_ROOT}/runs/icl-tf-fcfc-s{s}/checkpoints/tf-bc.pt", map_location=dev)); pol.eval()
+    pol.load_state_dict(torch.load(f"{LOG_ROOT}/runs/{PFX}-s{s}/checkpoints/tf-bc.pt", map_location=dev)); pol.eval()
     d0 = dict(s=torch.zeros(N, 1, 43, device=dev), a=torch.zeros(N, 1, A, device=dev), y=torch.zeros(N, 0, 0, device=dev), valid=torch.zeros(N, 1, dtype=torch.bool, device=dev))
     res[f"s{s}-tfbc_visible"] = run_k(pol, d0, False, 0)
     res[f"s{s}-tfbc_hidden"] = run_k(pol, d0, True, 0)
-    for n in (100, 1000, 10000):
+    for n in ((100, 1000, 10000) if len(sys.argv) <= 2 else ()):
         L = T.LAYOUT["fcfc"]
         p2 = T.TF(A, L, args.d, args.layers, args.heads, args.dropout).to(dev)
         p2.load_state_dict(torch.load(f"{LOG_ROOT}/runs/icl-tf-fcfc-s{s}/checkpoints/fcfc-N{n}.pt", map_location=dev)); p2.eval()
@@ -86,4 +88,4 @@ for s in seeds:
         res[f"s{s}-T1_noctx-N{n}"] = run_k(p2, dm, True, L)
     for k, v in res.items():
         if k.startswith(f"s{s}-"): print(k, [round(x, 3) for x in v["pass_k"]], flush=True)
-    json.dump(res, open(f"{LOG_ROOT}/runs/icl-bc-passk.json", "w"))
+    json.dump(res, open(f"{LOG_ROOT}/runs/{OUTF}", "w"))

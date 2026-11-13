@@ -7,12 +7,15 @@ import matplotlib.pyplot as plt
 from run_logging import LOG_ROOT
 
 OUT = f"{LOG_ROOT}/renders/icl-tf"; os.makedirs(OUT, exist_ok=True)
-CAT = len(sys.argv) > 1 and sys.argv[1] == "cat"  # concat-pathway runs (icl-tf-dbg-catabc-s*)
-SUF, DIR = ("_cat", "icl-tf-dbg-catabc") if CAT else ("", None)
-TTL = " [concat pathway]" if CAT else " [token pathway]"
+MODE = sys.argv[1] if len(sys.argv) > 1 else "tok"  # tok | cat (concat, 500 demos) | cat2k (concat, 2000 demos, MLP also 2000 demos)
+SUF, DIR = {"tok": ("", None), "cat": ("_cat", "icl-tf-dbg-catabc"), "cat2k": ("_cat2k", "icl-tf-dbg-catabc2k")}[MODE]
+TTL = {"tok": " [token pathway]", "cat": " [concat pathway]", "cat2k": " [concat, 2000 demos]"}[MODE]
+BCF = "icl-bc-passk-2k.json" if MODE == "cat2k" else "icl-bc-passk.json"
+MLPG = "icl-tf-dbg-mlp2k-s*" if MODE == "cat2k" else "icl-norm-pose_sum*-s*"
+NDEMO = 2000 if MODE == "cat2k" else 500
 NS = [100, 1000, 10000]; KS = np.arange(1, 9)
 R = {k: [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{DIR or f'icl-tf-{k}'}-s*/results.json"))] for k in ("fcfc", "fcfc_hist", "hist_c", "hist_c_noisy")}
-BCK = json.load(open(f"{LOG_ROOT}/runs/icl-bc-passk.json"))
+BCK = json.load(open(f"{LOG_ROOT}/runs/{BCF}"))
 pk = lambda k, n: np.array([r["runs"][f"{k}-N{n}"]["pass_k"] for r in R[k]])
 def style(a, xl, yl, t):
     a.set_xlabel(xl); a.set_ylabel(yl); a.set_title(t, fontsize=11); a.grid(alpha=.25)
@@ -24,7 +27,7 @@ fig, a = plt.subplots(figsize=(7.5, 5), constrained_layout=True)
 for n in NS:
     v = pk("fcfc", n); a.plot(KS, v.mean(0), "-o", color=BLUES[n], lw=2, ms=4, label=f"T1 [f,c,f+c], N={n} (hole hidden)")
     a.fill_between(KS, v.min(0), v.max(0), color=BLUES[n], alpha=.15)
-for key, col, ls, lab in (("tfbc_visible", "#e8742a", "-", "Transformer BC, hole visible (500 demos)"), ("tfbc_hidden", "#8a4b12", "--", "Transformer BC, hole hidden")):
+for key, col, ls, lab in (("tfbc_visible", "#e8742a", "-", f"Transformer BC, hole visible ({NDEMO} demos)"), ("tfbc_hidden", "#8a4b12", "--", "Transformer BC, hole hidden")):
     v = np.array([x["pass_k"] for k, x in BCK.items() if k.endswith(key)])
     a.plot(KS, v.mean(0), ls, marker="s", color=col, lw=2, ms=4, label=lab)
     a.fill_between(KS, v.min(0), v.max(0), color=col, alpha=.15)
@@ -33,7 +36,7 @@ fig.savefig(f"{OUT}/plot1_t1_vs_bc{SUF}.png", dpi=140)
 
 # 2: pass@2 vs N, T1 vs MLP
 mlp = {n: [] for n in NS}
-for p in sorted(glob.glob(f"{LOG_ROOT}/runs/icl-norm-pose_sum*-s*/results.json")):
+for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{MLPG}/results.json")):
     for n in NS:
         v = json.load(open(p))["runs"].get(f"N{n}")
         if v: mlp[n].append(v["pass2"])

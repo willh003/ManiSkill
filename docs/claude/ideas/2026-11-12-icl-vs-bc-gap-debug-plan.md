@@ -67,3 +67,14 @@ Ladder status: R0-R5, token order, slot embeddings, normalisation, training leng
 
 ## Replotted with concat pathway (500 demos; `icl_requested_plots.py cat`)
 logs/renders/icl-tf/plot{1_t1_vs_bc,2_pass2_vs_N,3_variants}_cat.png (token-pathway originals without suffix). T1 pass@k reaches .82-.84 by k=8 (BC .85) with ~.70 at k=2; transformer T1 > MLP at every N (.69-.74 vs .51-.52) and neither depends on N; A, B, T1 overlap by k=4; C (noisy c) stays low (.60-.66 at k=8). The MLP concatenates its inputs by construction, so it is already at its "best pathway". 2000-demo full grid (A/B/C, MLP) not run.
+
+## 2000-demo concat grid (3 seeds; runs icl-tf-dbg-catabc2k-s*, icl-tf-dbg-mlp2k-s*, logs/icl-bc-passk-2k.json; plots logs/renders/icl-tf/plot*_cat2k.png)
+TF BC (hole visible, 2000 demos) .886 pass@1 -> .90 at k=8; MLP BC .84. Rollout source is the 2000-demo MLP BC.
+| kind | N=100 p@2 / p@8 | N=1000 | N=10000 |
+|---|---|---|---|
+| T1 [f,c,f+c] | .785 / .88 | .810 / .88 | .811 / .88 |
+| A +history | .563 / .88 | .696 / .88 | .751 / .88 |
+| B history + c | .528 / .87 | .624 / .88 | .660 / .87 |
+| C B + noisy c | .246 / .74 | .316 / .80 | .414 / .82 |
+| MLP [f,c,f+c] (2000 demos, 20k steps) | .788 | .790 | .784 |
+Findings: with 2000 demos and concat, T1 reaches .81 pass@2 and .88 pass@8 (BC .89/.90), i.e. ~.08 below BC at k=2 and ~.02 at k=8. The MLP now matches the transformer (.78-.79 vs .79-.81), so the transformer is only better than the MLP when data is scarce (500 demos: .74 vs .52); the "transformer >= MLP" sanity check passes. More suboptimal data (N) still barely matters for T1/MLP, but A/B/C improve with N (.56 -> .75 for A, .25 -> .41 for C). A and B lag T1 at k=2 and catch up by k=5.
