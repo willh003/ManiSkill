@@ -8,16 +8,18 @@ from run_logging import LOG_ROOT
 
 OUT = f"{LOG_ROOT}/renders/icl-tf"; os.makedirs(OUT, exist_ok=True)
 MODE = sys.argv[1] if len(sys.argv) > 1 else "tok"  # tok | cat (concat, 500 demos) | cat2k (concat, 2000 demos, MLP also 2000 demos)
-SUF, DIR = {"tok": ("", None), "cat": ("_cat", "icl-tf-dbg-catabc"), "cat2k": ("_cat2k", "icl-tf-dbg-catabc2k"), "cat2kb": ("_cat2kb", "icl-tf-dbg-catabc2k")}[MODE]
-BIAS = MODE == "cat2kb"  # add C with biased scale U(1.1,1.3) (icl-tf-dbg-cbias2k)
-MODE = "cat2k" if BIAS else MODE
-TTL = {"tok": " [token pathway]", "cat": " [concat pathway]", "cat2k": " [concat, 2000 demos]"}[MODE]
-BCF = "icl-bc-passk-2k.json" if MODE == "cat2k" else "icl-bc-passk.json"
-MLPG = "icl-tf-dbg-mlp2k-s*" if MODE == "cat2k" else "icl-norm-pose_sum*-s*"
-NDEMO = 2000 if MODE == "cat2k" else 500
+SUF, DIR = {"tok": ("", None), "cat": ("_cat", "icl-tf-dbg-catabc"), "cat2k": ("_cat2k", "icl-tf-dbg-catabc2k"), "cat2kb": ("_cat2kb", "icl-tf-dbg-catabc2k"), "cat100": ("_cat100", "icl-tf-dbg-c100-{k}")}[MODE]
+BIAS100 = MODE == "cat100"
+BIAS = MODE in ("cat2kb", "cat100")  # add C with biased scale U(1.1,1.3) (icl-tf-dbg-cbias2k)
+MODE = "cat2k" if MODE == "cat2kb" else MODE
+TTL = {"tok": " [token pathway]", "cat": " [concat pathway]", "cat2k": " [concat, 2000 demos]", "cat100": " [concat, 100 demos]"}[MODE]
+BCF = {"cat2k": "icl-bc-passk-2k.json", "cat100": "icl-bc-passk-100.json"}.get(MODE, "icl-bc-passk.json")
+MLPG = {"cat2k": "icl-tf-dbg-mlp2k-s*", "cat100": "icl-tf-dbg-mlp100-s*"}.get(MODE, "icl-norm-pose_sum*-s*")
+NDEMO = {"cat2k": 2000, "cat100": 100}.get(MODE, 500)
 NS = [100, 1000, 10000]; KS = np.arange(1, 9)
-R = {k: [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{DIR or f'icl-tf-{k}'}-s*/results.json"))] for k in ("fcfc", "fcfc_hist", "hist_c", "hist_c_noisy")}
-RB = [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/icl-tf-dbg-cbias2k-s*/results.json"))]
+DIRK = lambda k: (DIR or "icl-tf-{k}").format(k=k)
+R = {k: [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{DIRK(k)}-s*/results.json"))] for k in ("fcfc", "fcfc_hist", "hist_c", "hist_c_noisy")}
+RB = [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/" + ("icl-tf-dbg-c100-cbias" if MODE == "cat100" else "icl-tf-dbg-cbias2k") + "-s*/results.json"))]
 BCK = json.load(open(f"{LOG_ROOT}/runs/{BCF}"))
 pk = lambda k, n: np.array([r["runs"][f"{k}-N{n}"]["pass_k"] for r in R[k]])
 def style(a, xl, yl, t):
