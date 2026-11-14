@@ -58,6 +58,7 @@ class Args:
     fp32: bool = False
     no_slot: bool = False  # debug: zero, freeze the per-slot embeddings
     no_cnorm: bool = False  # debug: raw (unnormalised) context
+    bc_only: bool = False  # train only the visible-goal transformer BC, saving a checkpoint + (val loss, success) at every eval_every steps, then exit
     cat: bool = False  # debug: concatenate the (flattened, normalised, validity-gated) context to the obs token instead of separate context tokens
 
 
@@ -247,9 +248,12 @@ def main():
         def bc_hook(pol, it):
             pol.eval()
             s_ = sc(rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", dummy(N, 0), mask_pose=False))
-            trace["bc"].append((it, s_))
+            v_ = val_bc(pol)
+            trace["bc"].append((it, s_, v_))
             run.save_json("trace_bc.json", trace)
-            print(f"  [tf bc] step {it}: success {s_:.3f}", flush=True)
+            if args.bc_only:
+                torch.save(pol.state_dict(), run.ckpt(f"tf-bc-it{it:05d}.pt"))
+            print(f"  [tf bc] step {it}: success {s_:.3f} val {v_:.5f}", flush=True)
 
         t0 = time.time()
         bl = fit(bc, EO, lambda: (torch.randint(0, E, (args.batch_size,), device=dev), None, None), args.steps, curves["bc"], val_bc, bc_hook)
@@ -257,6 +261,9 @@ def main():
         results["tf_bc"] = dict(success=sc(rollout(venv, expert, bc, args, eval_goals, args.eval_seed, "student", dummy(N, 0), mask_pose=False)), loss=bl, val=val_bc(bc))
         run.save_json("curves_bc.json", curves), run.save_json("results.json", results)
         print(f"transformer BC: success {results['tf_bc']['success']:.3f} loss {bl:.5f} val {results['tf_bc']['val']:.5f} ({time.time() - t0:.0f}s); expert {results['expert']:.3f}", flush=True)
+
+    if args.bc_only:
+        return
 
     # ---- 2. suboptimal rollouts from a visible-goal BC. The rollout source is the MLP BC of the earlier experiments (so data matches the MLP runs), trained here.
     from icl_final_state import MLP
