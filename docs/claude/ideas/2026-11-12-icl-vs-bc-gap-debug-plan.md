@@ -81,3 +81,15 @@ Findings: with 2000 demos and concat, T1 reaches .81 pass@2 and .88 pass@8 (BC .
 
 ## Variant C with biased scale U(1.1,1.3) (concat, 2000 demos, 3 seeds; runs icl-tf-dbg-cbias2k-s*; plot logs/renders/icl-tf/plot3_variants_cat2kb.png)
 pass@2 / pass@4 / pass@8 (C = U(.9,1.1) in parentheses for pass@2/8): N=100 .307 / .607 / .777 (.246/.74); N=1000 .443 / .763 / .831 (.316/.80); N=10000 .458 / .742 / .809 (.414/.82). Best-so-far peg-goal distance 0.14-0.15 m at k=1 -> .05-.07 at k=2 -> ~.017 at k=8. Biased (over-shooting) corrections are *not* worse than unbiased noisy ones; they are better at small k (the model can learn to compensate a systematic overshoot of ~20%, whereas zero-mean noise cannot be undone), and the two converge by N=10000 / k=8. Both stay below T1/A/B at k<=4.
+
+## 100 expert demos (concat pathway, 3 seeds, klone a40; runs icl-tf-dbg-c100-{fcfc,fcfc_hist,hist_c,hist_c_noisy,cbias}-s*, icl-tf-dbg-mlp100-s*, logs/runs/icl-bc-passk-100.json; plots logs/renders/icl-tf/plot{1,2,3}_*_cat100.png)
+BC, hole visible: TF BC .123/.164/.184 (final), pass@1/2/8 .141/.160/.173 (flat; hole hidden = 0); MLP BC .05 (the rollout source); expert .90. pass@2 / pass@4 / pass@8:
+| kind | N=100 | N=1000 | N=10000 |
+|---|---|---|---|
+| T1 | .176 / .264 / .331 | .154 / .237 / .288 | .180 / .269 / .319 |
+| A +history | .172 / .311 / .411 | .178 / .273 / .346 | .189 / .296 / .374 |
+| B history + c | .055 / .148 / .242 | .076 / .150 / .225 | .052 / .103 / .157 |
+| C s~U(.9,1.1) | .022 / .044 / .083 | .018 / .048 / .089 | .011 / .036 / .068 |
+| C-biased U(1.1,1.3) | .023 / .057 / .098 | .034 / .071 / .110 | .029 / .061 / .093 |
+| MLP pass@2 | .045 | .031 | .047 |
+Findings: with only 100 demos everything is weak (BC .14-.17; the policy itself rarely inserts even with the hole visible). T1 pass@2 (.15-.18) ~= BC (.16) and T1 exceeds BC by k=8 (.29-.33 vs .17), i.e. retries with corrections help beyond what the BC policy can do alone; A is the best variant (.35-.41 at k=8, history helps when data is scarce, unlike at 500/2000 demos); B and C are far worse and the biased C is only marginally better than unbiased; the MLP (.03-.05) is below the transformer (.15-.18) and no better than its own BC rollout source. N does not matter. Note the 100-demo BC rollout source is weak (MLP BC .05), so context rollouts are mostly far-from-goal flings.
