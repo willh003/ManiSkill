@@ -11,4 +11,5 @@
 source /mmfs1/gscratch/weirdlab/will/venvs/maniskill/bin/activate
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-1}
 cd /mmfs1/gscratch/weirdlab/will/ManiSkill/examples/baselines/ppo
+ARGS=${ARGS//@/,}  # sbatch --export splits on commas: write commas inside ARGS as @
 python -u ${SCRIPT} ${ARGS}
