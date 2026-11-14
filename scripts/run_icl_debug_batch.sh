@@ -12,5 +12,6 @@ case $tag in
  cnorm) $P $S --kinds hole,goal,fcfc --no-cnorm --ns 1000 --skip-bc --seed $s --out-dir $out ;;
  catabc2k) $P $S --kinds fcfc,fcfc_hist,hist_c,hist_c_noisy --cat --bc-demos 2000 --ns 100,1000,10000 --seed $s --out-dir $out ;;
  mlp2k) $P examples/baselines/ppo/icl_final_state.py --ctx-kind pose_sum --ctx-norm expert --ctx-drop 0 --bc-demos 2000 --ns 100,1000,10000 --steps 20000 --eval-every 5000 --seed $s --out-dir $out ;;
+ cbias2k) $P $S --kinds hist_c_noisy --cat --bc-demos 2000 --skip-bc --noise-lo 1.1 --noise-hi 1.3 --ns 100,1000,10000 --seed $s --out-dir $out ;;
  demos) $P $S --kinds hole,goal --bc-demos 2000 --ns 1000 --seed $s --out-dir $out ;;
 esac > logs/icl-tf-dbg-$tag-s$s.log 2>&1
