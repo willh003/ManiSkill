@@ -8,13 +8,16 @@ from run_logging import LOG_ROOT
 
 OUT = f"{LOG_ROOT}/renders/icl-tf"; os.makedirs(OUT, exist_ok=True)
 MODE = sys.argv[1] if len(sys.argv) > 1 else "tok"  # tok | cat (concat, 500 demos) | cat2k (concat, 2000 demos, MLP also 2000 demos)
-SUF, DIR = {"tok": ("", None), "cat": ("_cat", "icl-tf-dbg-catabc"), "cat2k": ("_cat2k", "icl-tf-dbg-catabc2k")}[MODE]
+SUF, DIR = {"tok": ("", None), "cat": ("_cat", "icl-tf-dbg-catabc"), "cat2k": ("_cat2k", "icl-tf-dbg-catabc2k"), "cat2kb": ("_cat2kb", "icl-tf-dbg-catabc2k")}[MODE]
+BIAS = MODE == "cat2kb"  # add C with biased scale U(1.1,1.3) (icl-tf-dbg-cbias2k)
+MODE = "cat2k" if BIAS else MODE
 TTL = {"tok": " [token pathway]", "cat": " [concat pathway]", "cat2k": " [concat, 2000 demos]"}[MODE]
 BCF = "icl-bc-passk-2k.json" if MODE == "cat2k" else "icl-bc-passk.json"
 MLPG = "icl-tf-dbg-mlp2k-s*" if MODE == "cat2k" else "icl-norm-pose_sum*-s*"
 NDEMO = 2000 if MODE == "cat2k" else 500
 NS = [100, 1000, 10000]; KS = np.arange(1, 9)
 R = {k: [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{DIR or f'icl-tf-{k}'}-s*/results.json"))] for k in ("fcfc", "fcfc_hist", "hist_c", "hist_c_noisy")}
+RB = [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/icl-tf-dbg-cbias2k-s*/results.json"))]
 BCK = json.load(open(f"{LOG_ROOT}/runs/{BCF}"))
 pk = lambda k, n: np.array([r["runs"][f"{k}-N{n}"]["pass_k"] for r in R[k]])
 def style(a, xl, yl, t):
@@ -50,11 +53,13 @@ style(a, "N suboptimal BC rollouts", "pass@2", "pass@2 vs N (dots = seeds)" + TT
 fig.savefig(f"{OUT}/plot2_pass2_vs_N{SUF}.png", dpi=140)
 
 # 3: pass@k for T1, A, B, C per N
-KIND = [("fcfc", "T1 [f,c,f+c]", "#2a78d6"), ("fcfc_hist", "A  +history", "#eb6834"), ("hist_c", "B  history + c", "#1baf7a"), ("hist_c_noisy", "C  B + noisy c", "#e87ba4")]
+KIND = [("fcfc", "T1 [f,c,f+c]", "#2a78d6"), ("fcfc_hist", "A  +history", "#eb6834"), ("hist_c", "B  history + c", "#1baf7a"), ("hist_c_noisy", "C  s~U(.9,1.1)", "#e87ba4")]
 fig, ax = plt.subplots(1, 3, figsize=(14, 4.4), sharey=True, constrained_layout=True)
 for a, n in zip(ax, NS):
     for k, lab, col in KIND:
         v = pk(k, n); a.plot(KS, v.mean(0), "-o", color=col, lw=2, ms=4, label=lab); a.fill_between(KS, v.min(0), v.max(0), color=col, alpha=.15)
+    if BIAS:
+        v = np.array([r["runs"][f"hist_c_noisy-N{n}"]["pass_k"] for r in RB]); a.plot(KS, v.mean(0), "--o", color="#8a2b5c", lw=2, ms=4, label="C-biased  s~U(1.1,1.3)"); a.fill_between(KS, v.min(0), v.max(0), color="#8a2b5c", alpha=.15)
     a.set_ylim(0, 1); style(a, "k (attempts)", "pass@k", f"N={n}")
 ax[1].legend(fontsize=8, loc="center right")
 fig.suptitle("pass@k by variant (mean of 3 seeds, band = seed range)" + TTL)
