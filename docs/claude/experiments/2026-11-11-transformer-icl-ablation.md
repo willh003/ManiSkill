@@ -64,3 +64,8 @@ BC = transformer BC trained on 500 expert demos (N in the ICL plan is the number
 | TF BC, hole hidden | 0 | 0 | 0 |
 | T1 ICL model, no context, hole hidden (N=100/1000/10000) | 0/.001/.002 | 0/.002/.002 | 0/.002/.002 |
 | T1 ICL with context (N=1000) | .001 | .504 | .712 |
+
+## Transformer BC checkpoint sweep: success vs val loss (klone a40, 2026-11-14)
+`icl_transformer.py --bc-only` (slurm/icl_bc_sweep.sbatch; jobs 43250467/43250515/43250569), visible-goal transformer BC, 500 expert demos, d=128 L=2, 20k steps cosine LR, checkpoint + val loss (200 held-out expert demos, action MSE) + success (512 fixed eval goals) every 500 steps. **41 checkpoints per seed**, 3 seeds: `logs/runs/icl-tf-bcsweep-s{1,2,3}/checkpoints/tf-bc-it{00500..20000}.pt` (+ `tf-bc.pt` final), trace in `trace_bc.json` = (step, success, val). Plot: `logs/renders/icl-tf/bc_success_vs_valloss.png` (+ .md table); script `icl_bc_valloss_plot.py`.
+Result: success rises steeply as val loss falls from .025 (step 500, success ~.1) to ~.010 (step ~3000, ~.78) and saturates at ~.82-.85 by val ~.009. Val loss bottoms out at step ~5000 (s1 .0090, s2 .0090, s3 .0072; val sets differ per seed so absolute levels are not comparable across seeds) and then rises slowly (overfitting, +10-15% by 20k) while success stays flat (~.80-.84): success is insensitive to val loss below ~.010, so the later checkpoints trade nothing in success for their worse val loss. Final-step success .816/.826/.836 (expert .90).
+Intended use: pick checkpoints at several val-loss levels (e.g. it 1000, 2000, 3000, 5000, 20000) as the rollout source / ICL BC policy for re-running pass@k by variant.
