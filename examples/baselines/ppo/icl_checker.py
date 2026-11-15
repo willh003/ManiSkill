@@ -163,7 +163,7 @@ def make_ctx(ep, stride):
     return dict(s=ep["obs"][:, idx], a=ep["act"][:, idx], y=ep["y"][:, idx], valid=ep["alive"][:, idx])
 
 
-def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal", fake=None, mask_pose=False):
+def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="normal", fake=None, mask_pose=False, act_noise=0.0):
     """One attempt on every task. mode: expert (true pose) | wrong_expert (expert acts on the pose of `fake`) | student (conditioned on `ctx`).
     Stored obs always contain the true hole pose (flag 0); labels = expert actions on the true pose; y = per-step feedback with the true pose."""
     device, N, T = venv.device, args.num_envs, args.num_steps
@@ -192,6 +192,8 @@ def rollout(venv, expert, policy, args, goals, seed, mode, ctx=None, ctx_mode="n
                 a = expert.get_action(wrong_expert_obs(obs, goals, fake), deterministic=True)
             else:
                 a = policy.decode(sobs(obs, mask_pose)[:, None], memory, pad)[:, 0]
+                if act_noise:
+                    a = a + act_noise * torch.randn_like(a)
         a, a_lab = torch.max(torch.min(a, high), low), torch.max(torch.min(a_lab, high), low)
         xs.append(sobs(obs)), acts.append(a), labels.append(a_lab), alive.append(~done), ys.append(step_feedback(obs))
         obs, _, _, _, infos = venv.step(a)
