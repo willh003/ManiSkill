@@ -34,7 +34,8 @@ goals = checker_sample(N, "all", dev, torch.Generator(device=dev).manual_seed(ar
 ex = rollout(venv, expert, None, args, goals, args.eval_seed, "expert")
 ar = torch.arange(N, device=dev)
 ex_peg = ex["obs"][ar, T.final_idx(ex["alive"])][:, T.PEG]
-L = T.LAYOUT["fcfc"]
+KIND = os.environ.get("KIND", "fcfc"); KPFX = os.environ.get("ICL_PFX", PFX)  # ICL variant (fcfc=T1, hist_c=B) and its run-dir prefix
+L = T.LAYOUT[KIND]
 
 
 def ctx_of(y, valid):
@@ -57,15 +58,16 @@ def bc_run(pol, sigma):
 
 def t1_run(pol, mode):
     r = rollout(venv, expert, pol, args, goals, args.eval_seed, "student", ctx_of(torch.zeros(N, L * 7, device=dev), False), "normal", mask_pose=True)
-    succ, f1 = [r["succ"]], fin(r)
+    succ, f1, h1 = [r["succ"]], fin(r), T.hist_of(r["obs"], T.final_idx(r["alive"]))
     for k in range(1, K):
         if mode == "real":
-            f = fin(r)
+            f, h = fin(r), T.hist_of(r["obs"], T.final_idx(r["alive"]))
         elif mode == "fixed":
-            f = f1
+            f, h = f1, h1
         else:
-            f = f1[torch.randperm(N, device=dev)]
-        c = T.mk("fcfc", None, f, ex_peg, torch.ones(N, device=dev))
+            pm = torch.randperm(N, device=dev)
+            f, h = f1[pm], h1[pm]
+        c = T.mk(KIND, h, f, ex_peg, torch.ones(N, device=dev))
         r = rollout(venv, expert, pol, args, goals, args.eval_seed, "student", ctx_of(c, True), "normal", mask_pose=True)
         succ.append(r["succ"])
     return summ(succ)
@@ -75,7 +77,7 @@ res = {}
 for s in seeds:
     d = f"{LOG_ROOT}/runs/{PFX}-s{s}/checkpoints"
     bc = T.TF(A, 0, args.d, args.layers, args.heads, args.dropout).to(dev); bc.load_state_dict(torch.load(f"{LOG_ROOT}/runs/{os.environ.get('BC_PFX', PFX)}-s{s}/checkpoints/{os.environ.get('BC_FILE', 'tf-bc.pt')}", map_location=dev)); bc.eval()
-    t1 = T.TF(A, L, args.d, args.layers, args.heads, args.dropout, True).to(dev); t1.load_state_dict(torch.load(f"{d}/fcfc-N1000.pt", map_location=dev)); t1.eval()
+    t1 = T.TF(A, L, args.d, args.layers, args.heads, args.dropout, True).to(dev); t1.load_state_dict(torch.load(f"{LOG_ROOT}/runs/{KPFX}-s{s}/checkpoints/{KIND}-N1000.pt", map_location=dev)); t1.eval()
     for sg in (0.0, 0.02, 0.05, 0.1):
         res[f"s{s}-bc_{'det' if sg == 0 else f'noise{sg}'}"] = bc_run(bc, sg)
     for m in ("real", "fixed", "randf"):
