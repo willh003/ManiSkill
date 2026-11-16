@@ -5,7 +5,7 @@ Conditions (k=1..8, hole visible for BC):
   t1_real       T1 recursive (context = previous attempt)
   t1_fixed      T1, context from attempt 1 reused for every retry (policy deterministic -> should be flat)
   t1_randf      T1, context [f',g-f',g] with f' = a random other task's failed final pose, fresh each retry (goal exact, f irrelevant)"""
-import json, sys
+import json, os, sys
 import gymnasium as gym
 import torch
 import icl_transformer as T
@@ -74,7 +74,7 @@ def t1_run(pol, mode):
 res = {}
 for s in seeds:
     d = f"{LOG_ROOT}/runs/{PFX}-s{s}/checkpoints"
-    bc = T.TF(A, 0, args.d, args.layers, args.heads, args.dropout).to(dev); bc.load_state_dict(torch.load(f"{d}/tf-bc.pt", map_location=dev)); bc.eval()
+    bc = T.TF(A, 0, args.d, args.layers, args.heads, args.dropout).to(dev); bc.load_state_dict(torch.load(f"{LOG_ROOT}/runs/{os.environ.get('BC_PFX', PFX)}-s{s}/checkpoints/{os.environ.get('BC_FILE', 'tf-bc.pt')}", map_location=dev)); bc.eval()
     t1 = T.TF(A, L, args.d, args.layers, args.heads, args.dropout, True).to(dev); t1.load_state_dict(torch.load(f"{d}/fcfc-N1000.pt", map_location=dev)); t1.eval()
     for sg in (0.0, 0.02, 0.05, 0.1):
         res[f"s{s}-bc_{'det' if sg == 0 else f'noise{sg}'}"] = bc_run(bc, sg)
