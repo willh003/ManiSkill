@@ -5,8 +5,11 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from run_logging import LOG_ROOT
 LBL = sys.argv[4] if len(sys.argv) > 4 else "T1"
-r = json.load(open(f"{LOG_ROOT}/runs/{sys.argv[1]}"))
+r = {}
+for f in sys.argv[1].split("+"):
+    r.update(json.load(open(f"{LOG_ROOT}/runs/{f}")))
 C = [("bc_det", "BC deterministic (old baseline)", "#8a4b12", "--"), ("bc_noise0.02", "BC + action noise 0.02", "#f2b47e", "-"), ("bc_noise0.05", "BC + action noise 0.05", "#e8742a", "-"), ("bc_noise0.1", "BC + action noise 0.1", "#b84a0a", "-"),
+     ("bf_real", "BC attempt 1, then T1 (real context)", "#0f7a52", "-"), ("bf_randf", "BC attempt 1, then T1 (random f, exact goal)", "#1baf7a", "-"), ("bf_fixed", "BC attempt 1, then T1 (same context every retry)", "#8fd9bc", "--"),
      ("t1_real", "T1 (real recursive context)", "#12468f", "-"), ("t1_randf", "T1, random f, exact goal", "#4a90e2", "-"), ("t1_fixed", "T1, same context every retry", "#9cc3f0", "--")]
 fig, ax = plt.subplots(figsize=(7, 4.6), constrained_layout=True)
 for key, lab, col, ls in C:
