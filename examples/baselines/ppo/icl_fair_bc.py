@@ -56,12 +56,12 @@ def bc_run(pol, sigma):
     return summ([rollout(venv, expert, pol, args, goals, args.eval_seed, "student", d0, "normal", mask_pose=False, act_noise=sigma)["succ"] for _ in range(K)])
 
 
-def t1_run(pol, mode, bcpol=None):
+def t1_run(pol, mode, bcpol=None, sigma=0.0):
     if bcpol is not None:  # attempt 1 = BC policy (hole visible); its rollout is the first context
         d0 = dict(s=torch.zeros(N, 1, 43, device=dev), a=torch.zeros(N, 1, A, device=dev), y=torch.zeros(N, 0, 0, device=dev), valid=torch.zeros(N, 1, dtype=torch.bool, device=dev))
-        r = rollout(venv, expert, bcpol, args, goals, args.eval_seed, "student", d0, "normal", mask_pose=False)
+        r = rollout(venv, expert, bcpol, args, goals, args.eval_seed, "student", d0, "normal", mask_pose=False, act_noise=sigma)
     else:
-        r = rollout(venv, expert, pol, args, goals, args.eval_seed, "student", ctx_of(torch.zeros(N, L * 7, device=dev), False), "normal", mask_pose=True)
+        r = rollout(venv, expert, pol, args, goals, args.eval_seed, "student", ctx_of(torch.zeros(N, L * 7, device=dev), False), "normal", mask_pose=True, act_noise=sigma)
     succ, f1, h1 = [r["succ"]], fin(r), T.hist_of(r["obs"], T.final_idx(r["alive"]))
     for k in range(1, K):
         if mode == "real":
@@ -72,7 +72,7 @@ def t1_run(pol, mode, bcpol=None):
             pm = torch.randperm(N, device=dev)
             f, h = f1[pm], h1[pm]
         c = T.mk(KIND, h, f, ex_peg, torch.ones(N, device=dev))
-        r = rollout(venv, expert, pol, args, goals, args.eval_seed, "student", ctx_of(c, True), "normal", mask_pose=True)
+        r = rollout(venv, expert, pol, args, goals, args.eval_seed, "student", ctx_of(c, True), "normal", mask_pose=True, act_noise=sigma)
         succ.append(r["succ"])
     return summ(succ)
 
@@ -82,7 +82,10 @@ for s in seeds:
     d = f"{LOG_ROOT}/runs/{PFX}-s{s}/checkpoints"
     bc = T.TF(A, 0, args.d, args.layers, args.heads, args.dropout).to(dev); bc.load_state_dict(torch.load(f"{LOG_ROOT}/runs/{os.environ.get('BC_PFX', PFX)}-s{s}/checkpoints/{os.environ.get('BC_FILE', 'tf-bc.pt')}", map_location=dev)); bc.eval()
     t1 = T.TF(A, L, args.d, args.layers, args.heads, args.dropout, True).to(dev); t1.load_state_dict(torch.load(f"{LOG_ROOT}/runs/{KPFX}-s{s}/checkpoints/{KIND}-N1000.pt", map_location=dev)); t1.eval()
-    if os.environ.get("BCFIRST"):
+    if os.environ.get("BCFIRST") and os.environ.get("BF_NOISE"):  # same action noise on the BC attempt and on every ICL attempt
+        for sg in [float(x) for x in os.environ["BF_NOISE"].replace("@", ",").split(",")]:
+            res[f"s{s}-bf_noise{sg}_real"] = t1_run(t1, "real", bc, sg)
+    elif os.environ.get("BCFIRST"):
         for m in ("real", "fixed", "randf"):
             res[f"s{s}-bf_{m}"] = t1_run(t1, m, bc)
     else:
