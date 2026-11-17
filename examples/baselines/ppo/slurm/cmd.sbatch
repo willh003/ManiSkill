@@ -6,7 +6,7 @@
 #SBATCH --time=4:00:00
 #SBATCH --requeue
 #SBATCH --output=/mmfs1/gscratch/weirdlab/will/ManiSkill/logs/slurm/%x-%j.out
-ROOT=/mmfs1/gscratch/weirdlab/will/ManiSkill
+export ROOT=/mmfs1/gscratch/weirdlab/will/ManiSkill
 NAME=$SLURM_JOB_NAME
 LOCK=$ROOT/logs/onpolicy-locks/$NAME
 mkdir -p $ROOT/logs/onpolicy-locks
