@@ -6,6 +6,8 @@ Same demos (seed * 100000), val demos, eval tasks, model and optimiser as icl_on
  hole_cat : hole hidden, hole pose given through the ICL concat context pathway (L=1)
  g_cat    : hole hidden, g through the concat pathway (= ICL [f+c] with the exact goal)
  fc_cat   : hole hidden, [f, c = g - f] through the concat pathway, f = another task's g (as ICL [f, c] with a far-off f)
+ fc_failrel: as fc_fail, but f = g - c_fail with c_fail = a failure's error against its own task's goal (realistic feedback size
+            and direction, as at ICL test time where f is the same task's previous attempt)
  fc_fail  : as fc_cat, but f = a failed final peg pose drawn from an icl_onpolicy pool (--fail-pool state.pt), redrawn for every
             training sample; val and eval use one fixed draw per task. Same inputs as ICL [f, c], minus the on-policy loop.
 Deterministic policy, one attempt on the 512 eval tasks. -> RUN_DIR/results.json {variant: {succ, val, loss}}"""
@@ -27,7 +29,7 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 from ppo import Agent
 from run_logging import LOG_ROOT, RunDir
 
-VARIANTS = ("hole_obs", "g_obs", "hole_cat", "g_cat", "fc_cat", "fc_fail")
+VARIANTS = ("hole_obs", "g_obs", "hole_cat", "g_cat", "fc_cat", "fc_fail", "fc_failrel")
 
 
 @dataclass
@@ -124,10 +126,14 @@ def main():
     ef, vf, xf = eg[der(E)], vg[der(NV)], xg[der(N)]
     F = None
     if args.fail_pool:
-        P = torch.load(args.fail_pool, map_location=dev, weights_only=False)["pool"]
-        F = P["peg"][~P["succ"].bool()]
+        SP = torch.load(args.fail_pool, map_location=dev, weights_only=False)
+        P, fl = SP["pool"], ~SP["pool"]["succ"].bool()
+        F = P["peg"][fl]
+        pg = SP["EO"][torch.arange(len(SP["EO"])), final_idx(SP["EA"])][:, PEG]
+        CF = (pg[P["task"]] - P["peg"])[fl]  # each failure's own error vector c
         print(f"failure pool: {len(F)} failed final poses from {args.fail_pool}", flush=True)
     draw = lambda n: F[torch.randint(0, len(F), (n,), device=dev)]
+    drawc = lambda n: CF[torch.randint(0, len(CF), (n,), device=dev)]
 
     out = json.load(open(f"{run.path}/results.json")) if os.path.exists(f"{run.path}/results.json") else {}
     out["expert"] = ex["succ"].float().mean().item()
@@ -135,10 +141,10 @@ def main():
         if v in out:
             continue
         torch.manual_seed(args.seed * 1000 + VARIANTS.index(v))
-        if v == "fc_fail":
-            assert F is not None, "fc_fail needs --fail-pool"
-            ef, vf, xf = draw(E), draw(NV), draw(N)
-        L = {"hole_cat": 1, "g_cat": 1, "fc_cat": 2, "fc_fail": 2}.get(v, 0)
+        if v in ("fc_fail", "fc_failrel"):
+            assert F is not None, f"{v} needs --fail-pool"
+            ef, vf, xf = (draw(E), draw(NV), draw(N)) if v == "fc_fail" else (eg - drawc(E), vg - drawc(NV), xg - drawc(N))
+        L = {"hole_cat": 1, "g_cat": 1, "fc_cat": 2, "fc_fail": 2, "fc_failrel": 2}.get(v, 0)
         tf = TF(A, L, args.d, args.layers, args.heads, 0.0, True).to(dev)
         Q, C, Vd = inputs(v, EO, eh, eg, ef, E)
         tf.set_norm(Q, C)
@@ -158,9 +164,9 @@ def main():
         tf.train()
         for it in range(args.steps):
             i = torch.randint(0, E, (args.batch_size,), device=dev)
-            if v == "fc_fail":  # redraw the failure for every sample
+            if v in ("fc_fail", "fc_failrel"):  # redraw the failure for every sample
                 C = C.clone()
-                C[i] = inputs(v, EO[i, :1], eh[i], eg[i], draw(len(i)), len(i))[1]
+                C[i] = inputs(v, EO[i, :1], eh[i], eg[i], draw(len(i)) if v == "fc_fail" else eg[i] - drawc(len(i)), len(i))[1]
             loss = mse(i, Q, C, Vd, EL, EA)
             opt.zero_grad(), loss.backward()
             nn.utils.clip_grad_norm_(tf.parameters(), 1.0)
