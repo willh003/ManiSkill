@@ -1,0 +1,413 @@
+"""ICL (target hidden, right/wrong feedback) vs BC (target given) on PickClutterYCBCond-v1.
+
+Data: for each of `demos` layouts, the target-conditioned PPO expert is rolled out once per condition c in 0..K-1 (same layout,
+deterministic robot init). A layout is kept only if all K conditioned rollouts lift their own object, so any (target,
+search-history) pair can be composed offline.
+
+ICL sample: target t, a random searcher history over the objects (a random permutation tried in order until t, then t repeated),
+its last <= L_CTX attempts as context tokens, and a timestep of the expert(t) rollout as the label. Each context token is the
+outcome of that attempt: final object xy (K x 2), lifted flag per object (max lift >= 4cm, K), feedback bit (1 = right object). With no "right"
+token the label is uniform over the untried objects, so the policy is a GMM.
+
+BC: same network with no context and the target block visible, trained on the same rollouts (each rollout is a demo of its own
+condition).
+
+Eval: `eval_layouts` held-out layouts with random targets; attempts 1..`attempts` each reset the same layout. Reports
+perf@k (success of attempt k), pass@k, repeat rate (lifted an already-tried wrong object), no-lift rate, and controls.
+
+Usage: python icl_clutter.py --expert-checkpoint logs/runs/clutter-expert-s1/final_ckpt.pt --demos 200 --seed 1
+"""
+import math
+import os
+import random
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+import gymnasium as gym
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import tyro
+
+import mani_skill.envs  # noqa: F401
+from mani_skill.envs.tasks.tabletop.pick_clutter_ycb_cond import K, OBS_DIM, TARGET_SLICE, obs_layout
+from ppo_fast import Agent
+from run_logging import LOG_ROOT, RunDir
+
+LAY = obs_layout()
+S_OBS = TARGET_SLICE.start  # student obs = everything before the target block
+TOK = 2 * K + K + 1  # context token dim: final xy per object, lifted flag per object, feedback bit
+L_CTX = K - 1  # context = last L_CTX attempts
+
+
+@dataclass
+class Args:
+    expert_checkpoint: str = str(LOG_ROOT / "runs/clutter-expert-s1/final_ckpt.pt")
+    demos: int = 200  # layouts used for training (each gives K rollouts)
+    val_layouts: int = 64
+    eval_layouts: int = 512
+    num_envs: int = 256
+    attempts: int = 6
+    steps: int = 20000
+    batch: int = 1024
+    lr: float = 3e-4
+    d: int = 256
+    layers: int = 3
+    heads: int = 4
+    mix: int = 5  # GMM components
+    sample: str = "sticky"  # GMM action at rollout: sticky | step | mean
+    temp: float = 0.5  # temperature on mixture logits when sampling a component
+    methods: str = "bc,icl"
+    seed: int = 1
+    eval_seed: int = 12345
+    data_seed: int = 1000
+    cache: Optional[str] = None  # task bank cache (.pt); default logs/clutter_bank/<expert>-<demos>-<seed>.pt
+    out_dir: Optional[str] = None
+
+
+# ------------------------------------------------------------------ env / expert
+def make_env(n):
+    return gym.make("PickClutterYCBCond-v1", num_envs=n, obs_mode="state", control_mode="pd_joint_delta_pos",
+                    sim_backend="physx_cuda", robot_init_qpos_noise=0.0)
+
+
+def load_expert(path, A, dev):
+    class _S:
+        single_observation_space = type("S", (), {"shape": (OBS_DIM,)})
+
+    ag = Agent(OBS_DIM, A, device=dev) if Agent.__init__.__code__.co_argcount > 2 else Agent(_S)
+    ag.load_state_dict(torch.load(path, map_location=dev))
+    return ag.eval()
+
+
+@torch.no_grad()
+def run_attempt(env, layout, target, act_fn, T):
+    """One attempt on n envs. act_fn(obs (n,OBS_DIM), t) -> action. Returns obs (n,T,OBS_DIM), act (n,T,A), alive (n,T) (steps up
+    to and incl. the terminating one), success (n,), lifted_id (n,), token (n,TOK) without feedback."""
+    obs, _ = env.reset(options=dict(layout=layout, target=target))
+    n = obs.shape[0]
+    dev = obs.device
+    O, Acts, Al = [], [], []
+    alive = torch.ones(n, dtype=torch.bool, device=dev)
+    succ = torch.zeros(n, dtype=torch.bool, device=dev)
+    lifted = torch.full((n,), -1, dtype=torch.long, device=dev)
+    maxlift = torch.zeros(n, K, device=dev)
+    fin_pos = torch.zeros(n, K, 2, device=dev)
+    for t in range(T):
+        a = act_fn(obs, t).clamp(-1, 1)
+        O.append(obs), Acts.append(a), Al.append(alive.clone())
+        obs, _, _, _, info = env.step(a)
+        pos = obs[:, LAY["obj_pose"]].reshape(n, K, 7)[..., :2]
+        maxlift = torch.where(alive[:, None], torch.maximum(maxlift, info["obj_lift"]), maxlift)
+        fin_pos = torch.where(alive[:, None, None], pos, fin_pos)
+        end = alive & (info["success"] | info["fail"])
+        succ |= end & info["success"]
+        lifted = torch.where(end, info["lifted_id"], lifted)
+        alive &= ~end
+    tok = torch.cat([fin_pos.reshape(n, -1), (maxlift >= 0.04).float(), torch.zeros(n, 1, device=dev)], 1)
+    return dict(obs=torch.stack(O, 1), act=torch.stack(Acts, 1), alive=torch.stack(Al, 1), succ=succ, lifted=lifted, tok=tok)
+
+
+def collect_bank(env, expert, n_layouts, seed, T, dev):
+    """Expert rollouts for every condition on layouts until n_layouts all-K-success layouts. Stored fp16."""
+    g = torch.Generator(device=dev).manual_seed(seed)
+    N = env.unwrapped.num_envs
+    keep = dict(obs=[], act=[], alive=[], tok=[], layout=[])
+    have, tried, b = 0, 0, 0
+    pol = lambda o, t: expert.actor_mean(o)
+    while have < n_layouts:
+        lay = env.unwrapped.sample_layout(N, gen=g)
+        rs = [run_attempt(env, lay, torch.full((N,), c, device=dev), pol, T) for c in range(K)]
+        ok = torch.stack([r["succ"] & (r["lifted"] == c) for c, r in enumerate(rs)], 1).all(1)
+        idx = ok.nonzero()[:, 0][: n_layouts - have]
+        keep["obs"].append(torch.stack([r["obs"][idx] for r in rs], 1).half())  # (n,K,T,OBS)
+        keep["act"].append(torch.stack([r["act"][idx] for r in rs], 1))
+        keep["alive"].append(torch.stack([r["alive"][idx] for r in rs], 1))
+        keep["tok"].append(torch.stack([r["tok"][idx] for r in rs], 1))
+        keep["layout"].append(lay[idx])
+        have += len(idx)
+        tried += N
+        b += 1
+        print(f"  bank batch {b}: kept {len(idx)}/{N} layouts (all {K} conditions succeed); total {have}/{n_layouts}; "
+              f"per-cond succ {[round(r['succ'].float().mean().item(), 3) for r in rs]}", flush=True)
+    out = {k: torch.cat(v) for k, v in keep.items()}
+    out["keep_frac"] = have / tried
+    return out
+
+
+# ------------------------------------------------------------------ model
+class GMMPolicy(nn.Module):
+    """obs token + up to L_CTX context tokens -> transformer -> GMM over actions (from the obs token)."""
+
+    def __init__(self, obs_dim, A, ctx, d, layers, heads, mix):
+        super().__init__()
+        self.obs_dim, self.A, self.ctx, self.mix = obs_dim, A, ctx, mix
+        self.register_buffer("s_mean", torch.zeros(obs_dim)), self.register_buffer("s_std", torch.ones(obs_dim))
+        self.register_buffer("c_mean", torch.zeros(TOK)), self.register_buffer("c_std", torch.ones(TOK))
+        self.obs_proj = nn.Sequential(nn.Linear(obs_dim, d), nn.GELU(), nn.Linear(d, d))
+        if ctx:
+            self.tok_proj = nn.Linear(TOK, d)
+            self.pos_emb = nn.Parameter(torch.randn(L_CTX, d) * 0.02)  # recency slot (0 = most recent)
+        self.obs_emb = nn.Parameter(torch.zeros(d))
+        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True, activation="gelu")
+        self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
+        self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, mix * (2 * A + 1)))
+
+    def set_norm(self, s, c=None):
+        self.s_mean.copy_(s.mean(0)), self.s_std.copy_(s.std(0).clamp_min(1e-3))
+        if c is not None:
+            self.c_mean.copy_(c.mean(0)), self.c_std.copy_(c.std(0).clamp_min(1e-3))
+            self.c_mean[2 * K:], self.c_std[2 * K:] = 0.0, 1.0  # binary flags as is
+
+    def forward(self, s, c=None, cmask=None):
+        """s (B,obs_dim); c (B,L_CTX,TOK) most recent first; cmask (B,L_CTX) True = present. -> logits (B,M), mu, log_std (B,M,A)."""
+        o = self.obs_proj((s - self.s_mean) / self.s_std) + self.obs_emb
+        seq, pad = o[:, None], torch.zeros(len(s), 1, dtype=torch.bool, device=s.device)
+        if self.ctx:
+            ct = self.tok_proj(((c - self.c_mean) / self.c_std).clamp(-5, 5)) + self.pos_emb
+            seq, pad = torch.cat([seq, ct], 1), torch.cat([pad, ~cmask], 1)
+        h = self.enc(seq, src_key_padding_mask=pad)[:, 0]
+        out = self.head(h)
+        M, A = self.mix, self.A
+        logits = out[:, :M]
+        mu = out[:, M:M + M * A].reshape(-1, M, A)
+        log_std = out[:, M + M * A:].reshape(-1, M, A).clamp(-5, 1)
+        return logits, mu, log_std
+
+    def nll(self, s, a, c=None, cmask=None):
+        logits, mu, ls = self(s, c, cmask)
+        lp = (-0.5 * ((a[:, None] - mu) / ls.exp()) ** 2 - ls - 0.5 * math.log(2 * math.pi)).sum(-1)
+        return -(torch.logsumexp(F.log_softmax(logits, -1) + lp, -1)).mean()
+
+
+class Sampler:
+    """Picks the GMM action. sticky: keep the previous component while its weight >= 0.2, else resample (temp); step: resample
+    each step; mean: mixture mean."""
+
+    def __init__(self, mode, temp, n, dev):
+        self.mode, self.temp, self.k = mode, temp, torch.full((n,), -1, dtype=torch.long, device=dev)
+
+    def reset(self):
+        self.k.fill_(-1)
+
+    def __call__(self, logits, mu):
+        w = logits.softmax(-1)
+        if self.mode == "mean":
+            return (w[..., None] * mu).sum(1)
+        new = torch.distributions.Categorical(logits=logits / self.temp).sample()
+        if self.mode == "sticky":
+            keep = (self.k >= 0) & (w.gather(1, self.k.clamp_min(0)[:, None])[:, 0] >= 0.2)
+            new = torch.where(keep, self.k, new)
+        self.k = new
+        return mu[torch.arange(len(mu), device=mu.device), new]
+
+
+# ------------------------------------------------------------------ ICL samples
+def search_contexts(target, gen):
+    """Random searcher history for each target: random permutation tried in order until the target, then the target again.
+    Returns ids (B,L_CTX) of the last <=L_CTX attempts (most recent first; -1 = absent) and feedback (B,L_CTX)."""
+    B, dev = len(target), target.device
+    perm = torch.argsort(torch.rand(B, K, generator=gen, device=dev), 1)
+    pos_t = (perm == target[:, None]).float().argmax(1)  # attempts needed to hit t (0-based)
+    h = torch.randint(0, K + 2, (B,), generator=gen, device=dev)  # history length 0..K+1
+    ids = torch.full((B, L_CTX), -1, dtype=torch.long, device=dev)
+    for j in range(L_CTX):
+        a = h - 1 - j  # attempt index of slot j
+        ok = a >= 0
+        obj = torch.where(a <= pos_t, perm.gather(1, a.clamp(0, K - 1)[:, None])[:, 0], target)
+        ids[:, j] = torch.where(ok, obj, -1)
+    fb = (ids == target[:, None]) & (ids >= 0)
+    return ids, fb
+
+
+def build_ctx(tok, lid, ids, fb):
+    """tok (Nl,K,TOK) bank tokens; lid (B,) layout ids; ids/fb (B,L_CTX). -> c (B,L_CTX,TOK), mask."""
+    c = tok[lid[:, None], ids.clamp_min(0)].clone()
+    c[..., -1] = fb.float()
+    mask = ids >= 0
+    c[~mask] = 0
+    return c, mask
+
+
+# ------------------------------------------------------------------ training
+def train(model, bank, val, args, dev, run, tag, ctx):
+    obs, act, alive, tok = bank["obs"], bank["act"], bank["alive"], bank["tok"]
+    Nl, _, T, _ = obs.shape
+    idx = alive.nonzero()  # (n,3): layout, cond, t
+    v_idx = val["alive"].nonzero()
+    sdim = model.obs_dim
+    g = torch.Generator(device=dev).manual_seed(args.seed)
+    s_all = obs[idx[:, 0], idx[:, 1], idx[:, 2]].float()[:, :sdim]
+    if ctx:
+        ids, fb = search_contexts(idx[:, 1], g)
+        c, m = build_ctx(tok, idx[:, 0], ids, fb)
+        model.set_norm(s_all, c[m])
+    else:
+        model.set_norm(s_all)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.steps)
+
+    def batch(src, ix, gen):
+        sel = ix[torch.randint(0, len(ix), (args.batch,), generator=gen, device=dev)]
+        lid, cond, t = sel[:, 0], sel[:, 1], sel[:, 2]
+        s = src["obs"][lid, cond, t].float()[:, :sdim]
+        a = src["act"][lid, cond, t]
+        if not ctx:
+            return s, a, None, None
+        ids, fb = search_contexts(cond, gen)
+        c, m = build_ctx(src["tok"], lid, ids, fb)
+        return s, a, c, m
+
+    gv = torch.Generator(device=dev).manual_seed(0)
+    vb = [batch(val, v_idx, gv) for _ in range(8)]
+    best, t0 = 1e9, time.time()
+    for step in range(1, args.steps + 1):
+        loss = model.nll(*batch(bank, idx, g))
+        opt.zero_grad(), loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step(), sched.step()
+        if step % 500 == 0 or step == args.steps:
+            model.eval()
+            with torch.no_grad():
+                vl = sum(model.nll(*b).item() for b in vb) / len(vb)
+            model.train()
+            run.log(step, {f"{tag}/train_nll": loss.item(), f"{tag}/val_nll": vl})
+            if vl < best:
+                best = vl
+                torch.save(model.state_dict(), run.ckpt(f"{tag}-best.pt"))
+            print(f"[{tag}] step {step} train {loss.item():.3f} val {vl:.3f} ({time.time() - t0:.0f}s)", flush=True)
+    torch.save(model.state_dict(), run.ckpt(f"{tag}.pt"))
+    return best
+
+
+# ------------------------------------------------------------------ evaluation
+@torch.no_grad()
+def evaluate(env, layouts, targets, policy_fn, attempts, T, dev, ctx_mode="real"):
+    """Run `attempts` attempts per eval layout. policy_fn(obs, t, c, cmask, k) -> action. ctx_mode: real | none | shuf_fb.
+    Returns per-attempt arrays."""
+    N = layouts.shape[0]
+    hist_tok = torch.zeros(N, 0, TOK, device=dev)
+    hist_ids = torch.zeros(N, 0, dtype=torch.long, device=dev)
+    hist_fb = torch.zeros(N, 0, dtype=torch.bool, device=dev)
+    res = dict(succ=[], lifted=[], repeat=[], nolift=[])
+    found = torch.zeros(N, dtype=torch.bool, device=dev)
+    for k in range(attempts):
+        h = hist_tok.shape[1]
+        c = torch.zeros(N, L_CTX, TOK, device=dev)
+        m = torch.zeros(N, L_CTX, dtype=torch.bool, device=dev)
+        if ctx_mode != "none":
+            for j in range(min(h, L_CTX)):
+                c[:, j] = hist_tok[:, h - 1 - j]
+                m[:, j] = True
+            if ctx_mode == "shuf_fb":
+                c[..., -1] = (torch.rand(N, L_CTX, device=dev) < 0.5).float() * m
+        r = run_attempt(env, layouts, targets, lambda o, t: policy_fn(o, t, c, m, k), T)
+        tried_wrong = ((hist_ids == r["lifted"][:, None]) & ~hist_fb).any(1) if h else torch.zeros(N, dtype=torch.bool, device=dev)
+        res["succ"].append(r["succ"].float().mean().item())
+        res["nolift"].append((r["lifted"] < 0).float().mean().item())
+        res["repeat"].append((tried_wrong & (r["lifted"] >= 0)).float().mean().item())
+        res["lifted"].append(r["lifted"].cpu())
+        found |= r["succ"]
+        res.setdefault("pass", []).append(found.float().mean().item())
+        tk = r["tok"].clone()
+        tk[:, -1] = r["succ"].float()
+        hist_tok = torch.cat([hist_tok, tk[:, None]], 1)
+        hist_ids = torch.cat([hist_ids, r["lifted"][:, None]], 1)
+        hist_fb = torch.cat([hist_fb, r["succ"][:, None]], 1)
+    res["lifted"] = torch.stack(res["lifted"], 1).tolist()
+    return res
+
+
+def main():
+    args = tyro.cli(Args)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    dev = torch.device("cuda")
+    random.seed(args.seed), np.random.seed(args.seed), torch.manual_seed(args.seed)
+    out = args.out_dir or str(LOG_ROOT / f"runs/icl-clutter-d{args.demos}-s{args.seed}")
+    run = RunDir(out, args)
+    env = make_env(args.num_envs)
+    T = env.unwrapped.spec.max_episode_steps or 75
+    A = env.action_space.shape[-1]
+    expert = load_expert(args.expert_checkpoint, A, dev)
+
+    ename = os.path.basename(os.path.dirname(args.expert_checkpoint))
+    cache = args.cache or str(LOG_ROOT / f"clutter_bank/{ename}-d{args.demos}-v{args.val_layouts}-ds{args.data_seed}.pt")
+    if os.path.exists(cache):
+        bank, val = torch.load(cache, map_location=dev)
+        print(f"loaded bank {cache}")
+    else:
+        print("collecting expert bank ...")
+        bank = collect_bank(env, expert, args.demos, args.data_seed, T, dev)
+        val = collect_bank(env, expert, args.val_layouts, args.data_seed + 7777, T, dev)
+        os.makedirs(os.path.dirname(cache), exist_ok=True)
+        torch.save((bank, val), cache)
+    print(f"bank: {bank['obs'].shape[0]} layouts, keep frac {bank['keep_frac']:.3f}")
+
+    # eval tasks: held-out layouts + targets, processed in chunks of num_envs
+    ge = torch.Generator(device=dev).manual_seed(args.eval_seed)
+    E, N = args.eval_layouts, args.num_envs
+    ev_lay = torch.cat([env.unwrapped.sample_layout(N, gen=ge) for _ in range(math.ceil(E / N))])[:E]
+    ev_tgt = torch.randint(0, K, (E,), generator=ge, device=dev)
+
+    def eval_all(policy_fn, attempts, ctx_mode="real", sampler=None):
+        parts = []
+        for i in range(0, E, N):
+            if sampler is not None:
+                sampler.reset()
+            parts.append(evaluate(env, ev_lay[i:i + N], ev_tgt[i:i + N], policy_fn, attempts, T, dev, ctx_mode))
+        w = [min(N, E - i) / E for i in range(0, E, N)]
+        return {k: ([sum(wi * p[k][j] for wi, p in zip(w, parts)) for j in range(attempts)] if k != "lifted" else sum((p[k] for p in parts), []))
+                for k in parts[0]}
+
+    results = dict(keep_frac=bank["keep_frac"], n_layouts=bank["obs"].shape[0])
+    expert_fn = lambda o, t, c, m, k: expert.actor_mean(o)
+    results["expert"] = eval_all(expert_fn, 1)
+    print("expert attempt-1 succ", results["expert"]["succ"])
+
+    methods = args.methods.split(",")
+    samp = Sampler(args.sample, args.temp, N, dev)
+
+    def gmm_fn(model, sdim, ctx, rand_cond=False):
+        def f(o, t, c, m, k):
+            if t == 0:
+                samp.reset()
+                if rand_cond:
+                    f.cond = torch.randint(0, K, (o.shape[0],), device=dev)
+            s = o[:, :sdim]
+            if rand_cond:
+                s = s.clone()
+                oh = F.one_hot(f.cond, K).float()
+                s[:, LAY["target_onehot"]] = oh
+                tp = o[:, LAY["obj_pose"]].reshape(-1, K, 7)[torch.arange(len(o), device=dev), f.cond]
+                s[:, LAY["target_pose"]] = tp
+                s[:, LAY["tcp_to_target"]] = tp[:, :3] - o[:, LAY["tcp_pose"]][:, :3]
+            logits, mu, _ = model(s, c if ctx else None, m if ctx else None)
+            return samp(logits, mu)
+        return f
+
+    if "bc" in methods:
+        bc = GMMPolicy(OBS_DIM, A, False, args.d, args.layers, args.heads, args.mix).to(dev)
+        results["bc_val_nll"] = train(bc, bank, val, args, dev, run, "bc", ctx=False)
+        bc.eval()
+        results["bc"] = eval_all(gmm_fn(bc, OBS_DIM, False), args.attempts, sampler=samp)
+        results["bc_guess"] = eval_all(gmm_fn(bc, OBS_DIM, False, rand_cond=True), args.attempts, sampler=samp)
+        print("BC pass", results["bc"]["pass"], "\nBC guess pass", results["bc_guess"]["pass"], flush=True)
+    if "icl" in methods:
+        icl = GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix).to(dev)
+        results["icl_val_nll"] = train(icl, bank, val, args, dev, run, "icl", ctx=True)
+        icl.eval()
+        for mode in ("real", "none", "shuf_fb"):
+            results[f"icl_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
+            print(f"ICL[{mode}] pass", results[f"icl_{mode}"]["pass"], "succ", results[f"icl_{mode}"]["succ"],
+                  "repeat", results[f"icl_{mode}"]["repeat"], flush=True)
+    es = results["expert"]["succ"][0]
+    results["oracle_pass"] = [es * min(1.0, (k + 1) / K) for k in range(args.attempts)]
+    results["guess_pass_ref"] = [es * (1 - (1 - 1 / K) ** (k + 1)) for k in range(args.attempts)]
+    run.save_json("results.json", results)
+    print("done", out)
+
+
+if __name__ == "__main__":
+    main()
