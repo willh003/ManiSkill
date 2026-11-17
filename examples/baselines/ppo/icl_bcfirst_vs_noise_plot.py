@@ -22,12 +22,13 @@ def panel(a, d, title):
     a.set_xlabel("k (attempts)"), a.set_ylabel(YL), a.set_title(title + " (N=1000, 3 seeds, band = range)"), a.grid(alpha=.25)
 
 
+DEMO = sys.argv[2] if len(sys.argv) > 2 else "100"  # 100 | 200 | 500 | 2k (T1 only)
 SUF = "" if VAR == "T1" else "_" + VAR
-D1 = "100" if VAR == "T1" else "100-" + VAR
+D1 = DEMO if VAR == "T1" else DEMO + "-" + VAR
 fig, a = plt.subplots(figsize=(7, 4.6), constrained_layout=True)
-panel(a, D1, "100 demos"), a.legend(fontsize=8, loc="lower right")
-fig.savefig(f"{LOG_ROOT}/renders/icl-tf/bcfirst_vs_noise_100{SUF}{PS}.png", dpi=130)
-if VAR == "T1":
+panel(a, D1, dict(D)[DEMO]), a.legend(fontsize=8, loc="lower right")
+fig.savefig(f"{LOG_ROOT}/renders/icl-tf/bcfirst_vs_noise_{DEMO}{SUF}{PS}.png", dpi=130)
+if VAR == "T1" and DEMO == "100":
     fig, ax = plt.subplots(1, 4, figsize=(20, 4.6), constrained_layout=True)
     for a, (d, t) in zip(ax, D):
         panel(a, d, t)
