@@ -49,6 +49,7 @@ class Args:
     layers: int = 2
     heads: int = 4
     seed: int = 1
+    fail_scale: float = 1.0  # fc_failrel: failure error vectors multiplied by this (0 -> f = g, c = 0; checks the pipeline)
     amp: bool = True  # bf16 autocast in training (as icl_onpolicy); --no-amp = fp32
     fail_pool: str = ""  # fc_fail: state.pt of an icl_onpolicy run; its failed rollouts' final peg poses
     eval_seed: int = 12345
@@ -134,7 +135,7 @@ def main():
         CF = (pg[P["task"]] - P["peg"])[fl]  # each failure's own error vector c
         print(f"failure pool: {len(F)} failed final poses from {args.fail_pool}", flush=True)
     draw = lambda n: F[torch.randint(0, len(F), (n,), device=dev)]
-    drawc = lambda n: CF[torch.randint(0, len(CF), (n,), device=dev)]
+    drawc = lambda n: args.fail_scale * CF[torch.randint(0, len(CF), (n,), device=dev)]
 
     out = json.load(open(f"{run.path}/results.json")) if os.path.exists(f"{run.path}/results.json") else {}
     out["expert"] = ex["succ"].float().mean().item()
