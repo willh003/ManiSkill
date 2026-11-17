@@ -25,8 +25,9 @@ source /mmfs1/gscratch/weirdlab/will/venvs/maniskill/bin/activate
 export OMP_NUM_THREADS=2
 cd $ROOT/examples/baselines/ppo
 for s in ${SEEDS//@/ }; do
-  python -u icl_onpolicy.py --kind $KIND --pairing $PAIR --supervise $SUP --demos $DEMOS --rounds ${ROUNDS:-6} --seed $s \
-    --out-dir $ROOT/logs/runs/icl-op-$KIND-$PAIR-$SUP-d$DEMOS-s$s > $ROOT/logs/slurm/$NAME-s$s.log 2>&1 &
+  SFX=$([ "${ROLLOUT:-demo}" = fresh ] && echo -fresh)
+  python -u icl_onpolicy.py --kind $KIND --pairing $PAIR --supervise $SUP --demos $DEMOS --rounds ${ROUNDS:-6} --seed $s --rollout-tasks ${ROLLOUT:-demo} \
+    --out-dir $ROOT/logs/runs/icl-op-$KIND-$PAIR-$SUP$SFX-d$DEMOS-s$s > $ROOT/logs/slurm/$NAME-s$s.log 2>&1 &
 done
 wait
 grep -c ALLDONE $ROOT/logs/slurm/$NAME-s*.log

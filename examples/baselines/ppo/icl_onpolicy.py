@@ -9,6 +9,9 @@
    --kind goal [f+c] | fc [f, c] | hist_c [h x10, f, c]
  --pairing matched: context from a rollout on task t, target = t's expert demo.
            random : f/h from a random pooled rollout, c recomputed against the target demo's goal.
+ --rollout_tasks demo : roll out on the E demo tasks (fixed expert budget, but the model memorises them)
+                 fresh: roll out on new tasks each round (one expert rollout per task only to get its goal g for the context),
+                        paired at random with the fixed E demos (requires --pairing random).
  --supervise demo  : targets are the expert demos only (fixed expert budget).
              dagger: half of each batch is the student's own visited states with expert action labels, conditioned on the
                      context that attempt actually had (attempts 2..K only: no-context samples make the model ignore the context).
@@ -41,6 +44,8 @@ class Args:
     kind: str = "fc"  # goal | fc | hist_c
     pairing: str = "matched"  # matched | random
     supervise: str = "demo"  # demo | dagger
+    rollout_tasks: str = "demo"  # demo | fresh
+    fresh_batches: int = 1  # fresh: batches of num_envs new tasks per round (train); val uses one batch
     rounds: int = 6
     K: int = 8
     p_noctx: float = 0.0  # fraction of samples with no context. Keep 0: at 100 demos 0.125 makes the model fit the demos from the state alone and ignore the context (goal-only pass@8 .08 -> .004)
@@ -61,6 +66,8 @@ class Args:
 def main():
     args = tyro.cli(Args)
     assert args.kind in ("goal", "fc", "hist_c") and args.pairing in ("matched", "random") and args.supervise in ("demo", "dagger")
+    assert args.rollout_tasks == "demo" or (args.pairing == "random" and args.supervise == "demo"), "fresh tasks have no demo to match or relabel"
+    fresh = args.rollout_tasks == "fresh"
     torch.backends.cuda.matmul.allow_tf32 = True
     dev = torch.device("cuda")
     run = RunDir(args.out_dir, args)
@@ -99,6 +106,22 @@ def main():
             have += len(ok)
             b += 1
         return torch.cat(ob), torch.cat(lb), torch.cat(al), bt
+
+    def fresh_tasks(nb, seed0):
+        """New tasks for on-policy rollouts: the expert is rolled out only to get each task's goal g (its final peg pose); tasks it fails are dropped."""
+        bt = []
+        for b in range(nb):
+            goals, seed = checker_sample(N, "all", dev, None, args.split), seed0 + b * 20
+            r = rollout(venv, expert, None, args, goals, seed, "expert")
+            ok = r["succ"].nonzero()[:, 0]
+            bt.append(dict(seed=seed, goals=goals, gpeg=fin(r), slots=ok, idx=torch.full((len(ok),), -1, device=dev)))
+        return bt
+
+    def tasks_for(r):
+        """(train, val) task batches that round r's rollouts are collected on."""
+        if not fresh:
+            return EB, VB
+        return fresh_tasks(args.fresh_batches, args.seed * 100000 + 50000 + r * 1000), fresh_tasks(1, args.seed * 100000 + 70000 + r * 1000)
 
     sp = f"{run.path}/state.pt"
     if os.path.exists(sp):
@@ -200,9 +223,10 @@ def main():
         return curve[-1][1], curve[-1][2]
 
     # ---- eval: K recursive attempts on the fixed eval tasks
-    def attempts(pol, mode="real"):
-        """mode real: context = previous attempt | fixed: attempt-1 context reused | randf: another task's attempt-1 f/h with the exact goal."""
-        r = rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", ctx_of(torch.zeros(N, L * 7, device=dev), False), "normal", mask_pose=True)
+    def attempts(pol, mode="real", first=None):
+        """mode real: context = previous attempt | fixed: attempt-1 context reused | randf: another task's attempt-1 f/h with the exact goal.
+        first: a precomputed attempt-1 rollout (the visible-hole BC) instead of the blind ICL attempt."""
+        r = first if first is not None else rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", ctx_of(torch.zeros(N, L * 7, device=dev), False), "normal", mask_pose=True)
         f1, h1, out = fin(r), hist_of(r["obs"], final_idx(r["alive"])), []
         for k in range(K):
             if k:
@@ -231,14 +255,18 @@ def main():
             (VO, VL, VA.float(), [None] * NV, [None] * NV), curves["bc"], "bc")
         torch.save(bc.state_dict(), run.ckpt("tf-bc.pt"))
         results["bc"] = rollout(venv, expert, bc, args, eval_goals, args.eval_seed, "student", ctx_of(torch.zeros(N, 7, device=dev), False), "normal", mask_pose=False)["succ"].float().mean().item()
-        S["pool"], s0 = collect_pool(None, EB, bc, 0, bc=True)
-        S["vpool"], _ = collect_pool(None, VB, bc, 0, bc=True)
+        TB, TV = tasks_for(0)
+        S["pool"], s0 = collect_pool(None, TB, bc, 0, bc=True)
+        S["vpool"], _ = collect_pool(None, TV, bc, 0, bc=True)
         results["bc_train_succ"] = s0[0]
         S["round"] = 1
         save_state()
         print(f"round 0: BC success {results['bc']:.3f} (expert {results['expert']:.3f}), on demo tasks {s0[0]:.3f}, pool {len(S['pool']['peg'])} ({time.time() - t0:.0f}s)", flush=True)
 
     # ---- rounds 1..R: train ICL on the pool, eval, collect on-policy
+    bc = TF(A, 0, args.d, args.layers, args.heads).to(dev)
+    bc.load_state_dict(torch.load(run.ckpt("tf-bc.pt"), map_location=dev)), bc.eval()
+    bc_first = rollout(venv, expert, bc, args, eval_goals, args.eval_seed, "student", ctx_of(torch.zeros(N, 7, device=dev), False), "normal", mask_pose=False)
     for r in range(S["round"], R + 1):
         t0 = time.time()
         torch.manual_seed(args.seed * 1000 + r)
@@ -252,18 +280,21 @@ def main():
         loss, vl = fit(pol, lambda: batch(pool, EQ, EL, EA, e_peg, args.batch_size, args.p_noctx), valset, curves[f"r{r}"], f"r{r}")
         torch.save(pol.state_dict(), run.ckpt(f"round{r}.pt"))
         res = attempts(pol)
+        b = attempts(pol, first=bc_first)
+        res["bcf_succ"], res["bcf_pass_k"] = b["succ"], b["pass_k"]
         res.update(loss=loss, val=vl, pool=len(pool["peg"]), pool_succ=pool["succ"].float().mean().item())
         if r in (1, R):
             for m in ("fixed", "randf"):
                 c = attempts(pol, m)
                 res[f"{m}_succ"], res[f"{m}_pass_k"] = c["succ"], c["pass_k"]
         if r < R:
-            S["pool"], res["train_succ"] = collect_pool(pool, EB, pol, r)
-            S["vpool"], _ = collect_pool(vpool, VB, pol, r)
+            TB, TV = tasks_for(r)
+            S["pool"], res["train_succ"] = collect_pool(pool, TB, pol, r)
+            S["vpool"], _ = collect_pool(vpool, TV, pol, r)
         results["rounds"][str(r)] = res
         S["round"] = r + 1
         save_state()
-        print(f"round {r}: pass@k {r3(res['pass_k'])} perf@k {r3(res['succ'])} | pool {res['pool']} (succ {res['pool_succ']:.3f}) loss {loss:.5f} val {vl:.5f} ({time.time() - t0:.0f}s)", flush=True)
+        print(f"round {r}: pass@k {r3(res['pass_k'])} perf@k {r3(res['succ'])} | BC first: perf@k {r3(res['bcf_succ'])} | pool {res['pool']} (succ {res['pool_succ']:.3f}) loss {loss:.5f} val {vl:.5f} ({time.time() - t0:.0f}s)", flush=True)
         if "randf_pass_k" in res:
             print(f"   controls: fixed pass@k {r3(res['fixed_pass_k'])} | randf pass@k {r3(res['randf_pass_k'])}", flush=True)
     results["done"] = True
