@@ -142,7 +142,7 @@ def main(rd):
     for rnd in range(1, R + 1):
         pol = TF(Ad, L, cfg["d"], cfg["layers"], cfg["heads"], 0.0, True).to(dev)
         pol.load_state_dict(torch.load(f"{rd}/checkpoints/round{rnd}.pt", map_location=dev)), pol.eval()
-        z = lambda c: ((c - pol.c_mean) / pol.c_std).abs().reshape(N, -1)
+        z = lambda c: ((c - pol.c_mean) / pol.c_std).abs().reshape(len(c), -1)
         r, ch, zs = r1, [], [z(ctx1)]
         for k in range(1, K):
             c = mk(kind, hist_of(r["obs"], final_idx(r["alive"])), fin(r), g, ones)
