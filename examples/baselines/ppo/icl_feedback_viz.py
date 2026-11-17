@@ -35,7 +35,7 @@ plt.rcParams.update({"font.size": 10, "axes.edgecolor": MUTE, "axes.labelcolor":
 def feats(f, g):
     """-> dict of numpy: c position (cm), |c| (cm), orientation error (deg)."""
     c = (g[:, :3] - f[:, :3]) * 100
-    return dict(c=c.cpu().numpy(), n=c.norm(dim=-1).cpu().numpy(), ang=quat_angle(f[:, 3:], g[:, 3:]).cpu().numpy())
+    return dict(c=c.cpu().numpy(), n=c.norm(dim=-1).cpu().numpy(), ang=torch.rad2deg(quat_angle(f[:, 3:], g[:, 3:])).cpu().numpy())
 
 
 def style(a, title=None):
@@ -47,12 +47,13 @@ def style(a, title=None):
 
 
 def head(f, title, sub):
-    f.suptitle(title, x=0.01, ha="left", fontsize=12, fontweight="bold", color=INK)
-    f.text(0.01, 0.935, sub, fontsize=8.5, color=MUTE)
+    h = f.get_figheight()
+    f.suptitle(title, x=0.01, y=1 - 0.12 / h, ha="left", va="top", fontsize=12, fontweight="bold", color=INK)
+    f.text(0.01, 1 - 0.42 / h, sub, fontsize=8.5, color=MUTE, va="top")
 
 
-def cdf(a, x, col, lab, ls="-", lw=2):
-    x = np.sort(np.clip(x, 0.1, None))
+def cdf(a, x, col, lab, ls="-", lw=2, floor=0.1):
+    x = np.sort(np.clip(x, floor, None))
     a.plot(x, np.arange(1, len(x) + 1) / len(x), ls, color=col, lw=lw, label=lab)
 
 
@@ -94,20 +95,20 @@ def main(rd):
     axs.flat[0].legend(fontsize=8, frameon=False, loc="lower left", markerscale=3)
     head(fig, f"Feedback on the demo tasks, by the round that produced it ({cfg['demos']} demos)",
          f"Training pool of {name}, top view: c = expert final peg position - rollout final peg position. Clipped to +-{lim} cm. Round r's model trains on rounds 0..r-1.")
-    fig.tight_layout(rect=(0, 0, 1, 0.92)), fig.savefig(f"{out}/A_pool_scatter.png", dpi=130), plt.close(fig)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.75 / 6.6)), fig.savefig(f"{out}/A_pool_scatter.png", dpi=130), plt.close(fig)
 
     fig, axs = plt.subplots(1, 2, figsize=(12, 4.6))
     for r in srcs:
         v, col = A_[r], (BCC if r == 0 else SEQ((r - 1) / max(len(srcs) - 2, 1)))
         fl = ~v["succ"].astype(bool)
-        cdf(axs[0], v["n"][fl], col, lab(r)), cdf(axs[1], v["ang"][fl], col, lab(r))
+        cdf(axs[0], v["n"][fl], col, lab(r)), cdf(axs[1], v["ang"][fl], col, lab(r), floor=0)
     axs[0].set_xscale("log"), axs[0].set_xlabel("|c| position error of failed rollouts (cm, log)"), axs[0].set_ylabel("fraction of failed rollouts")
     axs[1].set_xlabel("orientation error of failed rollouts (deg)")
     for a in axs:
         style(a)
     axs[1].legend(fontsize=8, frameon=False, loc="lower right")
     head(fig, f"Feedback size on the demo tasks, failures only ({cfg['demos']} demos)", f"{name}. Cumulative distribution per round. Successes (c ~ 0) left out.")
-    fig.tight_layout(rect=(0, 0, 1, 0.9)), fig.savefig(f"{out}/A_pool_cdf.png", dpi=130), plt.close(fig)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.75 / 4.6)), fig.savefig(f"{out}/A_pool_cdf.png", dpi=130), plt.close(fig)
 
     # ---- B/C. eval tasks: BC attempt 1, then round-r ICL with a sliding window
     class A0:
@@ -172,7 +173,7 @@ def main(rd):
         a.legend(fontsize=7.5, frameon=False, loc="lower right")
     np.atleast_1d(axs)[0].set_ylabel("fraction of failed attempts")
     head(fig, f"Feedback after each attempt on the 512 eval tasks ({cfg['demos']} demos)", f"{name}. Attempt 1 = visible-hole BC, then the round's ICL model with a sliding window. This is the feedback the next attempt sees.")
-    fig.tight_layout(rect=(0, 0, 1, 0.88)), fig.savefig(f"{out}/B_eval_attempts_cdf.png", dpi=130), plt.close(fig)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.75 / 4.6)), fig.savefig(f"{out}/B_eval_attempts_cdf.png", dpi=130), plt.close(fig)
 
     fig, axs = plt.subplots(1, len(show) + 1, figsize=(4.2 * (len(show) + 1), 4.4), sharex=True, sharey=True)
     pan = [("visible-hole BC, attempt 1", B1, BCC)] + [(f"round {rnd} ICL, attempt 2", chains[rnd][0], FAIL) for rnd in show]
@@ -184,7 +185,7 @@ def main(rd):
         style(a, f"{t}\nsuccess {s.mean():.2f}")
     axs[0].set_ylabel("c_y (cm)")
     head(fig, f"Feedback on the eval tasks, top view ({cfg['demos']} demos)", f"{name}. Grey = success, colour = failure. Clipped to +-{lim} cm.")
-    fig.tight_layout(rect=(0, 0, 1, 0.86)), fig.savefig(f"{out}/B_eval_scatter.png", dpi=130), plt.close(fig)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.75 / 4.4)), fig.savefig(f"{out}/B_eval_scatter.png", dpi=130), plt.close(fig)
 
     fig, a = plt.subplots(figsize=(7.2, 4.4))
     x = np.array(sorted(clip))
@@ -193,7 +194,7 @@ def main(rd):
     a.set_xlabel("round"), a.set_ylabel("fraction of contexts with an input clipped"), a.set_ylim(0, 1)
     style(a), a.legend(fontsize=8.5, frameon=False)
     head(fig, "Context inputs beyond the +-5 std clip", f"{name}. Normaliser = mean/std of the round's training contexts; any of the {L * 7} inputs past 5 std counts.")
-    fig.tight_layout(rect=(0, 0, 1, 0.88)), fig.savefig(f"{out}/C_clip.png", dpi=130), plt.close(fig)
+    fig.tight_layout(rect=(0, 0, 1, 1 - 0.75 / 4.4)), fig.savefig(f"{out}/C_clip.png", dpi=130), plt.close(fig)
     json.dump(rec, open(f"{out}/feedback.json", "w"), indent=1)
     print("wrote", out, flush=True)
 
