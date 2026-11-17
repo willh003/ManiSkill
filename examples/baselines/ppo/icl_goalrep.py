@@ -49,6 +49,7 @@ class Args:
     layers: int = 2
     heads: int = 4
     seed: int = 1
+    amp: bool = True  # bf16 autocast in training (as icl_onpolicy); --no-amp = fp32
     fail_pool: str = ""  # fc_fail: state.pt of an icl_onpolicy run; its failed rollouts' final peg poses
     eval_seed: int = 12345
     split: str = "wide_corner"
@@ -155,7 +156,7 @@ def main():
         sel = lambda x, i: None if x is None else x[i]
 
         def mse(i, q, c, vd, lab, al):
-            with torch.autocast("cuda", dtype=torch.bfloat16):
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.amp):
                 p = tf(q[i], sel(c, i), sel(vd, i)).float()
             m = al[i].float()
             return (((p - lab[i]) ** 2).mean(-1) * m).sum() / m.sum().clamp_min(1.0)
@@ -181,6 +182,10 @@ def main():
         torch.save(tf.state_dict(), run.ckpt(f"{v}.pt"))
         r = rollout(venv, expert, Wrap(tf, v, xh, xg, xf), args, eval_goals, args.eval_seed, "student", dict(s=None, a=None, y=None, valid=None), "normal", mask_pose=False)
         out[v] = dict(succ=r["succ"].float().mean().item(), loss=curve[-1][1], val=curve[-1][2], curve=curve)
+        if v.startswith("fc_"):  # diagnostic: same model, f = g and c = 0 (does it read f as the goal?)
+            r0 = rollout(venv, expert, Wrap(tf, v, xh, xg, xg), args, eval_goals, args.eval_seed, "student", dict(s=None, a=None, y=None, valid=None), "normal", mask_pose=False)
+            out[v]["succ_f_eq_g"] = r0["succ"].float().mean().item()
+            print(f"  {v} with f = g, c = 0: succ {out[v]['succ_f_eq_g']:.3f}", flush=True)
         run.save_json("results.json", out)
         print(f"d{args.demos} s{args.seed} {v}: succ {out[v]['succ']:.3f} train {curve[-1][1]:.5f} val {curve[-1][2]:.5f}", flush=True)
     print("ALLDONE", flush=True)
