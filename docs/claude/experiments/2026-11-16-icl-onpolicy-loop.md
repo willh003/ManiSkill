@@ -17,7 +17,7 @@ The 2026-11-11..15 runs showed the ICL policy ignores the failure feedback: it w
 BC solves .77 of its own demo tasks but .117 of eval tasks, so most round-0 contexts are successes (c ~ 0). pass@8: matched .006 (round 1), .029 (round 2); random .020, .025, .012 (rounds 1-3). Val loss matched .124 -> .047 once on-policy data arrives. Grid therefore uses 8 rounds.
 
 ## v1 grid (discarded): 1/8 context-free training samples
-First grid used p_noctx=.125 so attempt 1 would be trained. At 100 demos this makes the model fit the demos from the state alone and ignore the context: goal-only pass@8 .004 vs .08 with p_noctx=0 (local check, seed 1, round 1, `logs/runs/icl-op-dbg-goal-p*`). Grid cancelled and rerun with p_noctx=0. v1 runs kept on klone as `logs/runs/icl-opn-*`.
+First grid used p_noctx=.125 so attempt 1 would be trained. At 100 demos this makes the model fit the demos from the state alone and ignore the context: goal-only pass@8 .004 vs .08 with p_noctx=0 (local check, seed 1, round 1, logs `logs/onpolicy/dbg-goal-p{0.0,0.125}.log`). Grid cancelled and rerun with p_noctx=0. v1 runs kept on klone as `logs/runs/icl-opn-*`.
 
 ## Results (v2, 3 seeds each, 8 rounds, eval = 512 fixed eval tasks; attempt 1 is blind so pass@1 ~ .005 everywhere)
 Plots `logs/renders/icl-onpolicy/<n>_*_{pass_k,succ}.png` (succ = perf@k); results page published as an artifact (see tracker experiment `icl-onpolicy-loop`).
