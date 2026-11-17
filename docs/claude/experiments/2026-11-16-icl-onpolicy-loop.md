@@ -44,3 +44,8 @@ Outer loop, [f,c] matched pass@8 at rounds 1/2/4/8: 100 demos .005/.249/.178/.15
 
 ## Pending
 DAgger relabel comparison (`--supervise dagger`, [f,c] matched, 100/200/2000, relabels attempts 2..K only) submitted 2026-11-17.
+
+## Re-eval with attempt 1 = BC (2026-11-17)
+`icl_onpolicy_bcfirst.py RUN_DIR` → `RUN_DIR/results_bcfirst.json`; plots `RES=bcfirst icl_onpolicy_plot.py` → `logs/renders/icl-onpolicy-bcfirst/`. `[f, c]` task-matched, 3 seeds. Attempt 1 = the run's `tf-bc.pt` (visible hole, deterministic), attempts 2..8 = `round{r}.pt` with a sliding window.
+
+Round 8 perf@k (attempt 1 → 2 → 8): 100 demos .148 → .063 → .069; 200 demos .502 → .291 → .307; 2000 demos .894 → .796 → .788. BC + noise stays at .15 / .51 / .90. perf@8 by round peaks at round 2 (100: .126, 200: .377), 2000 is flat (~.79–.81). pass@8 at round 2: .345 / .733 / .924 vs BC + noise .369 / .786 / .956. Every ICL attempt is below BC's own first attempt and flat across k: the retries are worse independent draws, not corrections.
