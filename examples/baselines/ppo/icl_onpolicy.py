@@ -2,7 +2,7 @@
 
  round 0: visible-hole transformer BC on E expert demos, rolled out once on every demo task -> pool of rollouts.
  round r=1..R: train the hole-hidden ICL transformer (concat context pathway) from scratch on the pool; a sample is
-     (context built from a pooled rollout, expert demo as target); a fraction p_noctx of samples has no context (attempt 1).
+     (context built from a pooled rollout, expert demo as target); optionally a fraction p_noctx of samples has no context (default 0, see Args).
    Evaluate k=1..K recursive attempts on 512 fixed eval tasks (attempt 1 blind, attempt k sees attempt k-1 only).
    Then roll the model out K times on every demo task with the same sliding window and append all K rollouts to the pool.
  Context of a rollout with final peg pose f on a task whose expert final peg pose is g (c = g - f, h = peg pose every 10 steps):
@@ -43,7 +43,7 @@ class Args:
     supervise: str = "demo"  # demo | dagger
     rounds: int = 6
     K: int = 8
-    p_noctx: float = 0.125
+    p_noctx: float = 0.0  # fraction of samples with no context. Keep 0: at 100 demos 0.125 makes the model fit the demos from the state alone and ignore the context (goal-only pass@8 .08 -> .004)
     num_envs: int = 512
     num_steps: int = 100
     steps: int = 10000

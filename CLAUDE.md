@@ -26,6 +26,7 @@ You will either be running from within hyak klone, a large shared compute cluste
 
 To run on klone from the local machine (push, sbatch, status, pull), see docs/claude/info/remote-workflow.md (scripts/cluster/).
 
+
 ## Working rules (added 2026-11-10)
 - **Commit code changes.** Whenever you modify or add code (scripts, configs, docs), commit it promptly (small, descriptive commits) before launching runs that depend on it, so each run's git_commit in config.json is meaningful. Don't leave experiment scripts untracked/dirty.
 - **Report runs to the experiment-tracking artifact** (https://claude.ai/artifact/3trmWhwWtEXCXZmKsrw1qh) with the ArtifactData tool (load it with ToolSearch if deferred), for every run you launch:

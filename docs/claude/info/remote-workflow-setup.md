@@ -16,6 +16,7 @@ Reference implementation: `scripts/cluster/` in this repo; usage is in `remote-w
 2. `rsync` on both ends.
 3. A checkout of the repo on the cluster (any rsync target dir works; it does not have to be a git clone) and a venv there.
    If the repo is a Python package, install it editable (`pip install -e .`) in the cluster venv so pushed code is live.
+4. if klone-login03 is down, a similar alias exists for klone-login01 (Host klone1).
 
 ## Steps
 1. Copy `scripts/cluster/{config,push,submit,status,pull,cancel}.sh` and `smoke.sbatch` into the new repo's `scripts/cluster/`; `chmod +x scripts/cluster/*.sh`.
