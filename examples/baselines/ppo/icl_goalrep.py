@@ -6,6 +6,8 @@ Same demos (seed * 100000), val demos, eval tasks, model and optimiser as icl_on
  hole_cat : hole hidden, hole pose given through the ICL concat context pathway (L=1)
  g_cat    : hole hidden, g through the concat pathway (= ICL [f+c] with the exact goal)
  fc_cat   : hole hidden, [f, c = g - f] through the concat pathway, f = another task's g (as ICL [f, c] with a far-off f)
+ fc_fail  : as fc_cat, but f = a failed final peg pose drawn from an icl_onpolicy pool (--fail-pool state.pt), redrawn for every
+            training sample; val and eval use one fixed draw per task. Same inputs as ICL [f, c], minus the on-policy loop.
 Deterministic policy, one attempt on the 512 eval tasks. -> RUN_DIR/results.json {variant: {succ, val, loss}}"""
 import json
 import math
@@ -25,7 +27,7 @@ from mani_skill.vector.wrappers.gymnasium import ManiSkillVectorEnv
 from ppo import Agent
 from run_logging import LOG_ROOT, RunDir
 
-VARIANTS = ("hole_obs", "g_obs", "hole_cat", "g_cat", "fc_cat")
+VARIANTS = ("hole_obs", "g_obs", "hole_cat", "g_cat", "fc_cat", "fc_fail")
 
 
 @dataclass
@@ -34,7 +36,7 @@ class Args:
     out_dir: str = str(LOG_ROOT / "runs/icl-goalrep")
     demos: int = 100
     val_demos: int = 200
-    variants: str = ",".join(VARIANTS)
+    variants: str = ",".join(VARIANTS[:5])  # fc_fail only on request (needs --fail-pool)
     num_envs: int = 512
     num_steps: int = 100
     steps: int = 10000
@@ -45,6 +47,7 @@ class Args:
     layers: int = 2
     heads: int = 4
     seed: int = 1
+    fail_pool: str = ""  # fc_fail: state.pt of an icl_onpolicy run; its failed rollouts' final peg poses
     eval_seed: int = 12345
     split: str = "wide_corner"
 
@@ -74,7 +77,7 @@ def inputs(v, obs, hole, g, f, n):
         q = q.clone()
         q[..., POSE], q[..., 42] = g[:, None].expand_as(q[..., POSE]), 0.0
         return q, None, None
-    c = {"hole_cat": lambda: hole[:, None], "g_cat": lambda: g[:, None], "fc_cat": lambda: torch.stack([f, g - f], 1)}[v]()
+    c = {"hole_cat": lambda: hole[:, None], "g_cat": lambda: g[:, None]}.get(v, lambda: torch.stack([f, g - f], 1))()
     return q, c, valid
 
 
@@ -119,6 +122,12 @@ def main():
     # distractor f for fc_cat: another task's goal (fixed derangement)
     der = lambda n: torch.roll(torch.arange(n, device=dev), 1)
     ef, vf, xf = eg[der(E)], vg[der(NV)], xg[der(N)]
+    F = None
+    if args.fail_pool:
+        P = torch.load(args.fail_pool, map_location=dev, weights_only=False)["pool"]
+        F = P["peg"][~P["succ"].bool()]
+        print(f"failure pool: {len(F)} failed final poses from {args.fail_pool}", flush=True)
+    draw = lambda n: F[torch.randint(0, len(F), (n,), device=dev)]
 
     out = json.load(open(f"{run.path}/results.json")) if os.path.exists(f"{run.path}/results.json") else {}
     out["expert"] = ex["succ"].float().mean().item()
@@ -126,7 +135,10 @@ def main():
         if v in out:
             continue
         torch.manual_seed(args.seed * 1000 + VARIANTS.index(v))
-        L = {"hole_cat": 1, "g_cat": 1, "fc_cat": 2}.get(v, 0)
+        if v == "fc_fail":
+            assert F is not None, "fc_fail needs --fail-pool"
+            ef, vf, xf = draw(E), draw(NV), draw(N)
+        L = {"hole_cat": 1, "g_cat": 1, "fc_cat": 2, "fc_fail": 2}.get(v, 0)
         tf = TF(A, L, args.d, args.layers, args.heads, 0.0, True).to(dev)
         Q, C, Vd = inputs(v, EO, eh, eg, ef, E)
         tf.set_norm(Q, C)
@@ -145,7 +157,11 @@ def main():
         curve = []
         tf.train()
         for it in range(args.steps):
-            loss = mse(torch.randint(0, E, (args.batch_size,), device=dev), Q, C, Vd, EL, EA)
+            i = torch.randint(0, E, (args.batch_size,), device=dev)
+            if v == "fc_fail":  # redraw the failure for every sample
+                C = C.clone()
+                C[i] = inputs(v, EO[i, :1], eh[i], eg[i], draw(len(i)), len(i))[1]
+            loss = mse(i, Q, C, Vd, EL, EA)
             opt.zero_grad(), loss.backward()
             nn.utils.clip_grad_norm_(tf.parameters(), 1.0)
             opt.step(), sched.step()
