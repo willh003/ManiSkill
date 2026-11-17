@@ -12,6 +12,8 @@
  --rollout_tasks demo : roll out on the E demo tasks (fixed expert budget, but the model memorises them)
                  fresh: roll out on new tasks each round (one expert rollout per task only to get its goal g for the context),
                         paired at random with the fixed E demos (requires --pairing random).
+ --goal-ref peg : g = the expert demo's final peg pose (default)
+            hole: g = the task's hole pose (obs dims 35:42), so c = hole pose - f; used for every context (train, pool rollouts, eval)
  --supervise demo  : targets are the expert demos only (fixed expert budget).
              dagger: half of each batch is the student's own visited states with expert action labels, conditioned on the
                      context that attempt actually had (attempts 2..K only: no-context samples make the model ignore the context).
@@ -26,7 +28,7 @@ import torch
 import torch.nn as nn
 import tyro
 
-from icl_checker import apply_mask, rollout
+from icl_checker import POSE, apply_mask, rollout
 from icl_tasks import checker_sample
 from icl_transformer import LAYOUT, PEG, TF, final_idx, hist_of, mk, quat_angle
 from mani_skill.utils.wrappers.flatten import FlattenActionSpaceWrapper
@@ -45,6 +47,7 @@ class Args:
     pairing: str = "matched"  # matched | random
     supervise: str = "demo"  # demo | dagger
     rollout_tasks: str = "demo"  # demo | fresh
+    goal_ref: str = "peg"  # peg | hole: what g (and c = g - f) is measured against
     fresh_batches: int = 1  # fresh: batches of num_envs new tasks per round (train); val uses one batch
     rounds: int = 6
     K: int = 8
@@ -68,6 +71,9 @@ def main():
     assert args.kind in ("goal", "fc", "hist_c") and args.pairing in ("matched", "random") and args.supervise in ("demo", "dagger")
     assert args.rollout_tasks == "demo" or (args.pairing == "random" and args.supervise == "demo"), "fresh tasks have no demo to match or relabel"
     fresh = args.rollout_tasks == "fresh"
+    assert args.goal_ref in ("peg", "hole")
+    # goal of a rollout dict / obs tensor: expert final peg pose, or the hole pose (constant over the episode, step 0)
+    goal_of = (lambda r: fin(r)) if args.goal_ref == "peg" else (lambda r: r["obs"][:, 0, POSE])
     torch.backends.cuda.matmul.allow_tf32 = True
     dev = torch.device("cuda")
     run = RunDir(args.out_dir, args)
@@ -102,7 +108,7 @@ def main():
             r = rollout(venv, expert, None, args, goals, seed, "expert")
             ok = r["succ"].nonzero()[:, 0][: n_need - have]
             ob.append(r["obs"][ok]), lb.append(r["lab"][ok]), al.append(r["alive"][ok])
-            bt.append(dict(seed=seed, goals=goals, gpeg=fin(r), slots=ok, idx=torch.arange(have, have + len(ok), device=dev)))
+            bt.append(dict(seed=seed, goals=goals, gpeg=goal_of(r), slots=ok, idx=torch.arange(have, have + len(ok), device=dev)))
             have += len(ok)
             b += 1
         return torch.cat(ob), torch.cat(lb), torch.cat(al), bt
@@ -114,7 +120,7 @@ def main():
             goals, seed = checker_sample(N, "all", dev, None, args.split), seed0 + b * 20
             r = rollout(venv, expert, None, args, goals, seed, "expert")
             ok = r["succ"].nonzero()[:, 0]
-            bt.append(dict(seed=seed, goals=goals, gpeg=fin(r), slots=ok, idx=torch.full((len(ok),), -1, device=dev)))
+            bt.append(dict(seed=seed, goals=goals, gpeg=goal_of(r), slots=ok, idx=torch.full((len(ok),), -1, device=dev)))
         return bt
 
     def tasks_for(r):
@@ -134,11 +140,16 @@ def main():
         S["eval_goals"] = checker_sample(N, "all", dev, torch.Generator(device=dev).manual_seed(args.eval_seed), args.split)
         ex = rollout(venv, expert, None, args, S["eval_goals"], args.eval_seed, "expert")
         S["ex_peg"] = fin(ex)
+        S["ex_goal"] = goal_of(ex)
         S["results"] = dict(expert=ex["succ"].float().mean().item(), rounds={})
     EO, EL, EA, EB, VO, VL, VA, VB = (S[k] for k in ("EO", "EL", "EA", "EB", "VO", "VL", "VA", "VB"))
     eval_goals, ex_peg, results, curves = S["eval_goals"], S["ex_peg"], S["results"], S["curves"]
     E, NV = len(EO), len(VO)
-    e_peg, v_peg = EO[torch.arange(E), final_idx(EA)][:, PEG], VO[torch.arange(NV), final_idx(VA)][:, PEG]
+    if args.goal_ref == "peg":
+        e_peg, v_peg = EO[torch.arange(E), final_idx(EA)][:, PEG], VO[torch.arange(NV), final_idx(VA)][:, PEG]
+    else:
+        e_peg, v_peg = EO[:, 0, POSE], VO[:, 0, POSE]
+    ex_goal = S.get("ex_goal", ex_peg)
     EQ, VQ = apply_mask(EO, allm(E)), apply_mask(VO, allm(NV))
 
     def save_state():
@@ -237,7 +248,7 @@ def main():
                 else:
                     pm = torch.randperm(N, device=dev)
                     f, h = f1[pm], h1[pm]
-                r = rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", ctx_of(mk(kind, h, f, ex_peg, ones(N)), True), "normal", mask_pose=True)
+                r = rollout(venv, expert, pol, args, eval_goals, args.eval_seed, "student", ctx_of(mk(kind, h, f, ex_goal, ones(N)), True), "normal", mask_pose=True)
             fp = fin(r)
             out.append(dict(succ=r["succ"], dist=(fp[:, :3] - ex_peg[:, :3]).norm(dim=-1), ang=quat_angle(fp[:, 3:], ex_peg[:, 3:])))
         succ, dist = torch.stack([o["succ"] for o in out], 1), torch.stack([o["dist"] for o in out], 1)
