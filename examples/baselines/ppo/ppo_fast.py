@@ -186,6 +186,7 @@ class Logger:
     def close(self):
         self.writer.close()
 
+@torch.no_grad()
 def gae(next_obs, next_done, container, final_values):
     # bootstrap value if not done
     next_value = get_value(next_obs).reshape(-1)
@@ -214,6 +215,7 @@ def gae(next_obs, next_done, container, final_values):
     return container
 
 
+@torch.no_grad()
 def rollout(obs, done):
     ts = []
     final_values = torch.zeros((args.num_steps, args.num_envs), device=device)
