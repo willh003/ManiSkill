@@ -1,7 +1,9 @@
 """Plots for the on-policy ICL loop (icl_onpolicy.py runs logs/runs/icl-op-<kind>-<pairing>-<supervise>-d<demos>-s<seed>).
 Writes logs/renders/icl-onpolicy/*.png; every figure exists for pass@k (best of attempts 1..k) and perf@k (success of attempt k alone),
 shows the mean over seeds with the seed range as a band, and varies exactly one thing. Missing runs are skipped.
-Usage: python icl_onpolicy_plot.py [run-name prefix, default icl-op]"""
+Usage: python icl_onpolicy_plot.py [run-name prefix, default icl-op]
+  RES=bcfirst: read results_bcfirst.json (attempt 1 = the run's visible-hole BC, then ICL; icl_onpolicy_bcfirst.py) and write
+  logs/renders/icl-onpolicy-bcfirst/ instead."""
 import glob, json, os, sys
 import numpy as np
 import matplotlib
@@ -11,7 +13,10 @@ from matplotlib.colors import LinearSegmentedColormap
 from run_logging import LOG_ROOT
 
 PFX = sys.argv[1] if len(sys.argv) > 1 else "icl-op"
-OUT = f"{LOG_ROOT}/renders/icl-onpolicy"; os.makedirs(OUT, exist_ok=True)
+BF = os.environ.get("RES") == "bcfirst"
+RESF = "results_bcfirst.json" if BF else "results.json"
+OUT = f"{LOG_ROOT}/renders/icl-onpolicy" + ("-bcfirst" if BF else ""); os.makedirs(OUT, exist_ok=True)
+A1 = "Attempt 1 = visible-hole BC, then ICL. " if BF else ""
 C1, C2, C3, INK, MUTE = "#2a78d6", "#eb6834", "#1baf7a", "#0b0b0b", "#52514e"
 SEQ = LinearSegmentedColormap.from_list("b", ["#b9d6f5", "#2a78d6", "#0c2f66"])
 MET = {"pass_k": "pass@k (success in any of attempts 1..k)", "succ": "perf@k (success of attempt k alone)"}
@@ -21,7 +26,7 @@ plt.rcParams.update({"font.size": 10, "axes.edgecolor": MUTE, "axes.labelcolor":
 
 
 def load(kind="fc", pair="matched", sup="demo", d=100):
-    rs = [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{PFX}-{kind}-{pair}-{sup}-d{d}-s*/results.json"))]
+    rs = [json.load(open(p)) for p in sorted(glob.glob(f"{LOG_ROOT}/runs/{PFX}-{kind}-{pair}-{sup}-d{d}-s*/{RESF}"))]
     return [r for r in rs if r.get("rounds")]
 
 
@@ -64,7 +69,7 @@ def line(a, v, col, lab, ls="-", lw=2, end=None):
 def fig(title, sub, ylabel, xlabel="k (attempts)"):
     f, a = plt.subplots(figsize=(7.2, 4.7), constrained_layout=True)
     a.set_title(title + "\n", fontsize=11.5, loc="left", color=INK, fontweight="bold")
-    a.text(0, 1.025, sub, transform=a.transAxes, fontsize=8.5, color=MUTE)
+    a.text(0, 1.025, A1 + sub, transform=a.transAxes, fontsize=8.5, color=MUTE)
     a.set_xlabel(xlabel), a.set_ylabel(ylabel), a.set_ylim(0, 1), a.grid(alpha=.22, lw=.6)
     for s in ("top", "right"):
         a.spines[s].set_visible(False)
@@ -89,7 +94,7 @@ for m, ml in MET.items():
         rs = load(d=d)
         if not rs: continue
         R = last(rs)
-        f, a = fig(f"Outer loop: each on-policy round, {d} demos", "[f, c] context, task-matched pairing. Round 1 trains on visible-hole BC failures only.", ml)
+        f, a = fig(f"Outer loop: each on-policy round, {d} demos", "[f, c] context, task-matched." if BF else "[f, c] context, task-matched pairing. Round 1 trains on visible-hole BC failures only.", ml)
         for r in range(1, R + 1):
             line(a, arr(rs, r, m), SEQ((r - 1) / max(R - 1, 1)), f"round {r}", end=f"r{r}" if r in (1, R) else None)
         bcline(a, d, m)
@@ -148,7 +153,7 @@ for m, ml in MET.items():
         rs, p = load(d=d), f"{LOG_ROOT}/runs/icl-fair-bc-{tag}.json"
         if not rs or not os.path.exists(p): continue
         fb = json.load(open(p))
-        f, a = fig(f"On-policy ICL vs BC with action noise, {d} demos", "ICL: hole hidden, [f, c], task-matched, last round. BC: hole visible, noise 0.05 redrawn each retry.", ml)
+        f, a = fig(f"On-policy ICL vs BC with action noise, {d} demos", "ICL: [f, c], task-matched, last round. BC: noise 0.05 each retry.", ml)
         line(a, arr(rs, last(rs), m), C1, "on-policy ICL (hole hidden)", end="ICL")
         bcline(a, d, m, C2)
         done(f, a, f"7_vs_bc_d{d}_{m}", "lower right")
@@ -163,7 +168,7 @@ for m, ml in MET.items():
         done(f, a, f"8_dagger_d{d}_{m}")
 
 # 9. train / val loss per round (seed 1)
-for d in DEMOS:
+for d in ([] if BF else DEMOS):
     p = f"{LOG_ROOT}/runs/{PFX}-fc-matched-demo-d{d}-s1/curves.json"
     if not os.path.exists(p): continue
     cv = {k: np.array(v) for k, v in json.load(open(p)).items() if k != "bc" and len(v)}
