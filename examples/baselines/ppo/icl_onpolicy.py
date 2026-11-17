@@ -11,7 +11,7 @@
            random : f/h from a random pooled rollout, c recomputed against the target demo's goal.
  --supervise demo  : targets are the expert demos only (fixed expert budget).
              dagger: half of each batch is the student's own visited states with expert action labels, conditioned on the
-                     context that attempt actually had.
+                     context that attempt actually had (attempts 2..K only: no-context samples make the model ignore the context).
 State is saved after every round (state.pt) and the script resumes from it."""
 import math
 import os
@@ -143,7 +143,7 @@ def main():
                 d = dict(hist=hist_of(r["obs"], final_idx(r["alive"]))[sl], peg=fin(r)[sl], task=bt["idx"], succ=r["succ"][sl],
                          rnd=torch.full((n,), rnd, device=dev), att=torch.full((n,), k, device=dev))
                 if dagger:
-                    d.update(obs=apply_mask(r["obs"][sl], allm(n)), lab=r["lab"][sl], alive=r["alive"][sl], q=torch.full((n,), not bc, dtype=torch.bool, device=dev),
+                    d.update(obs=apply_mask(r["obs"][sl], allm(n)), lab=r["lab"][sl], alive=r["alive"][sl], q=torch.full((n,), not bc and prev is not None, dtype=torch.bool, device=dev),
                              ctx=torch.full((n,), -1, device=dev) if prev is None else prev)
                 prev = base + torch.arange(n, device=dev)
                 base += n
