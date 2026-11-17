@@ -1,0 +1,14 @@
+#!/bin/bash
+# Push, then submit on-policy ICL jobs. Each config goes to weirdlab l40 and to ckpt a40 / l40 / l40s under one job name
+# (the copy that starts first cancels the others, see slurm/icl_onpolicy.sbatch).
+# Usage: submit_onpolicy.sh "<kind> <pairing> <supervise> <demos>" ...     e.g. submit_onpolicy.sh "fc matched demo 100" "goal matched demo 2000"
+source "$(dirname "$0")/config.sh"
+"$(dirname "$0")/push.sh" >/dev/null || exit $?
+SB=examples/baselines/ppo/slurm/icl_onpolicy.sbatch
+cmd="cd $REMOTE_DIR && mkdir -p logs/slurm logs/runs"
+for cfg in "$@"; do
+  set -- $cfg; n=op-$1-$2-$3-d$4; ex="--export=ALL,KIND=$1,PAIR=$2,SUP=$3,DEMOS=$4,SEEDS=${SEEDS:-1@2@3},ROUNDS=${ROUNDS:-6}"
+  cmd+="; sbatch --parsable -J $n -A gpu-l40-weirdlab -p gpu-l40 --gres=gpu:l40:1 $ex $SB"
+  for g in a40 l40 l40s; do cmd+="; sbatch --parsable -J $n -A ckpt-weirdlab -p ckpt-all --gres=gpu:$g:1 $ex $SB"; done
+done
+ssh "$REMOTE_HOST" "$cmd"
