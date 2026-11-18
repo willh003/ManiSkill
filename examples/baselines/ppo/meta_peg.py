@@ -27,7 +27,7 @@ def zrot(yaw):
 
 
 class MetaPeg:
-    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False):
+    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False, full_obs=False):
         env = gym.make("PegInsertionSideBias-v1", num_envs=num_envs, obs_mode="state", control_mode="pd_joint_delta_pos",
                        sim_backend="physx_cuda", reward_mode="normalized_dense", max_episode_steps=10 ** 6)
         env = FlattenActionSpaceWrapper(env) if isinstance(env.action_space, gym.spaces.Dict) else env
@@ -40,8 +40,9 @@ class MetaPeg:
         self.low = torch.as_tensor(self.venv.single_action_space.low, device=self.dev)
         self.high = torch.as_tensor(self.venv.single_action_space.high, device=self.dev)
         self.T = n_ep * EP_LEN
-        self.actor_dim = S_DIM + n_ep + 1 + 15
-        self.critic_dim = self.actor_dim + 43
+        self.full_obs = full_obs  # True: actor sees the critic obs incl. the true hole (oracle baseline, use with n_ep=1)
+        self.critic_dim = S_DIM + n_ep + 1 + 15 + 43
+        self.actor_dim = self.critic_dim if full_obs else S_DIM + n_ep + 1 + 15
 
     # ---- meta-episode control
     def reset(self, seed, goals=None, gen=None):
@@ -69,7 +70,8 @@ class MetaPeg:
         oh[:, self.ep] = 1
         tt = torch.full((self.N, 1), self.t / EP_LEN, device=self.dev)
         a = torch.cat([o[:, :S_DIM], oh, tt, torch.zeros_like(self.f) if self.hide_f else self.f, self.c, self.fb_valid[:, None]], 1)
-        return a, torch.cat([a, o[:, :43]], 1)
+        cr = torch.cat([a, o[:, :43]], 1)
+        return (cr if self.full_obs else a), cr
 
     def expert_obs(self):
         return self.raw[:, :43]

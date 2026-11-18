@@ -37,6 +37,7 @@ class Args:
     split: str = "wide_corner"
     same_init: bool = True
     hide_f: bool = False  # do not give the final peg pose f in the feedback (only c); the policy must remember it from the last frames
+    full_obs: bool = False  # oracle baseline: actor sees the true hole (use --n-ep 1 --ep1-label true)
     memoryless: bool = False  # actor ignores the GRU (feedforward on the same obs); baseline for the memory ablation
     eval_seed: int = 12345
     hidden: int = 256
@@ -128,7 +129,7 @@ class Trainer:
         self.args = args
         self.dev = torch.device("cuda")
         torch.manual_seed(args.seed)
-        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f)
+        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs)
         self.expert = load_expert(args.expert_checkpoint, self.dev)
         self.N, self.T, self.A = args.num_envs, self.env.T, self.env.A
         self.actor = Actor(self.env.actor_dim, self.A, args.hidden, args.memoryless).to(self.dev)
