@@ -47,4 +47,13 @@ job was cancelled and resubmitted with `SBATCH_EXTRA=--exclude=g3118`. Local cop
 - PPO also improves on its own expert teacher (.90 with the true hole), so the upper bound is not limited by the expert.
 - Versus ICL: the hidden-hole ICL transformer's best pass@2 (2000 demos) is ~.82-.87, and much lower at 100 / 200 demos.
 
-Running: e2-n2 (2 cm, oracle .203) and e2-n4 (4 cm, oracle .068) locally; klone e2-n1, e2-n0, e3-n1 (3 seeds each) queued / running.
+Larger noise (local, seed 1):
+| config | BC init | final | oracle | zeroed c | shuffled c | GRU reset |
+|---|---|---|---|---|---|---|
+| e2-n2 (2 cm / .1 rad) | .004 / .574 | .012 / **.910** | .012 / .203 | .002 | .008 | .902 |
+| e2-n4 (4 cm / .2 rad) | .008 / .303 | .010 / **.668** | .012 / .068 | .000 | .018 | .637 |
+- The upper bound degrades gracefully: .98 (0-.5 cm), .97 (1 cm), .91 (2 cm), .67 (4 cm), always 3-10x the trusting oracle.
+- Interim (2026-11-18 morning): e3-n4 (3 eps, 4 cm, oracle .053 / .125) at PPO 204: ep2 .62, ep3 .74, so the third episode gains from the
+  second feedback (memory or more search; its GRU-reset control at the end will tell). e2-n4 seed 2 at PPO 161: ep2 .54.
+  Klone e2-n1 s1 at PPO 288: ep2 .96 (matches the local seed); klone e3-n1 s1 at PPO 120: .93 / .96. Klone e2-n0 still pending (the
+  noiseless result so far is the single local pilot seed).
