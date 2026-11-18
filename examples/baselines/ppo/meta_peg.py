@@ -27,13 +27,14 @@ def zrot(yaw):
 
 
 class MetaPeg:
-    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda"):
+    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False):
         env = gym.make("PegInsertionSideBias-v1", num_envs=num_envs, obs_mode="state", control_mode="pd_joint_delta_pos",
                        sim_backend="physx_cuda", reward_mode="normalized_dense", max_episode_steps=10 ** 6)
         env = FlattenActionSpaceWrapper(env) if isinstance(env.action_space, gym.spaces.Dict) else env
         self.venv = ManiSkillVectorEnv(env, num_envs, auto_reset=False, ignore_terminations=True, record_metrics=False)
         self.N, self.n_ep, self.split, self.same_init = num_envs, n_ep, split, same_init
         self.nxy, self.nyaw = fb_noise_xy, fb_noise_yaw
+        self.hide_f = hide_f  # True: the actor obs does not contain the final peg pose f (only c = hole - f + noise); f must be remembered from the last frames
         self.dev = torch.device(device)
         self.A = self.venv.single_action_space.shape[0]
         self.low = torch.as_tensor(self.venv.single_action_space.low, device=self.dev)
@@ -67,7 +68,7 @@ class MetaPeg:
         oh = torch.zeros(self.N, self.n_ep, device=self.dev)
         oh[:, self.ep] = 1
         tt = torch.full((self.N, 1), self.t / EP_LEN, device=self.dev)
-        a = torch.cat([o[:, :S_DIM], oh, tt, self.f, self.c, self.fb_valid[:, None]], 1)
+        a = torch.cat([o[:, :S_DIM], oh, tt, torch.zeros_like(self.f) if self.hide_f else self.f, self.c, self.fb_valid[:, None]], 1)
         return a, torch.cat([a, o[:, :43]], 1)
 
     def expert_obs(self):
