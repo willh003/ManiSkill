@@ -23,37 +23,49 @@ BC (12 DAgger iterations, ~40 min) then 300 PPO iterations (1024 envs, ~25 s/ite
 - Compare ICL (`2026-11-16-icl-onpolicy-loop.md`, hole hidden, attempt 1 blind): best pass@2 at 2000 demos ~.82-.87; at 100/200 demos far lower.
   The RL upper bound for the same 2-attempt protocol is .98.
 
-## Grid (klone, 3 seeds each, 300 PPO iterations): e2-n0, e2-n05, e2-n1, e3-n1
-Submitted with `scripts/cluster/submit_cmd.sh rl2-peg-<cfg>` (3 seeds in parallel per job, all GPU groups, first to start cancels the rest).
-Klone's gscratch was very slow on 2026-11-17 evening: jobs on g3118 and g3117 sat >15 min in uninterruptible IO importing torch; the g3118
-job was cancelled and resubmitted with `SBATCH_EXTRA=--exclude=g3118`. Local copies `rl2-peg-{e2-n1,e3-n1}-loc-s1` run meanwhile.
+## Runs
+300 PPO iterations each, 1024 envs. Klone jobs via `scripts/cluster/submit_cmd.sh rl2-peg-<cfg>` (3 seeds in parallel per job, all GPU groups,
+first to start cancels the rest): e2-n05 s1-3, e2-n1 s1-3, e3-n1 s1-3. Local (5090, `-loc-` in the name): pilot-s1 (= e2-n0 s1), e2-n0 s2-3,
+e2-n1 s1, e3-n1 s1, e2-n2 s1, e2-n4 s1-2, e3-n4 s1. The klone e2-n0 job never started (one weirdlab L40, ckpt did not schedule) and was
+cancelled in favour of local seeds. Klone gscratch was very slow on 2026-11-17 evening: jobs on g3118 / g3117 / g3094 sat 15-20 min in
+uninterruptible IO importing torch; the g3118 one never recovered and was resubmitted with `SBATCH_EXTRA=--exclude=g3118`.
+Checkpoints `logs/runs/rl2-peg-*/checkpoints/{bc.pt,it<k>.pt,latest.pt}`; results `results.json`; plot
+`logs/renders/rl2-peg/noise_sweep.png` (`examples/baselines/ppo/rl2_peg_plot.py`, also on the tracker as asset 6da696f2...).
 
-## Results (deterministic eval, 512 tasks; success per episode)
-| config | run(s) | BC init | final (300 PPO iters) | oracle | zeroed c | shuffled c | GRU reset at boundary |
+## Results (deterministic eval, 512 tasks; success per episode; ranges over seeds)
+Two episodes, success in episode 2 (episode 1 is blind, .002-.016 everywhere):
+| feedback noise (xy / yaw) | seeds | BC init | **recurrent PPO** | scripted oracle | zeroed c | shuffled c | GRU reset at boundary |
 |---|---|---|---|---|---|---|---|
-| e2-n0 | pilot-s1 (local) | .004 / .863 | .014 / **.984** | .012 / .902 | .002 | .004 | .982 |
-| e2-n05 | s1, s2, s3 (klone) | .004 / .805, .861, .875 | .010, .012, .002 / **.975, .984, .980** | .012 / .607 | .000-.006 | .006-.010 | .969-.980 |
-| e2-n1 | loc-s1 | .004 / .803 | .008 / **.967** | .012 / .330 | .000 | .006 | .963 |
-| e3-n1 | loc-s1 | .002 / .730 / .828 | .004 / **.971 / .980** | .010 / .332 / .484 | .002 / .000 | .006 / .006 | .965 / .977 |
+| none | 3 | .863-.898 | **.982-.990 (mean .986)** | .902 | .000-.002 | .004-.006 | .979-.982 |
+| .5 cm / .025 rad | 3 | .805-.875 | **.975-.984 (.980)** | .607 | .000-.006 | .006-.010 | .969-.980 |
+| 1 cm / .05 rad | 4 | .762-.803 | **.967-.973 (.970)** | .330 | .000 | .006-.020 | .955-.969 |
+| 2 cm / .1 rad | 1 | .574 | **.910** | .203 | .002 | .008 | .902 |
+| 4 cm / .2 rad | 2 | .303-.332 | **.668-.674 (.671)** | .068 | .000 | .018-.020 | .637-.713 |
 
-- **The RL upper bound is ~.97-.98 on the attempt after feedback at noise up to 1 cm**, far above the scripted oracle that trusts the
-  noisy estimate (.33 at 1 cm). The policy uses the feedback to get near the hole and then corrects closed-loop from contact (the peg / TCP
-  state reacts when the peg hits the box face), so 1 cm of noise is almost free. Without the feedback (zeroed or another task's), ep 2
-  falls to the blind level (<= .01), so the coarse location comes only from the feedback.
-- Episode 1 stays blind (~.01): with this reward there is nothing to gain in ep 1 except its own success.
-- Resetting the GRU state at the boundary changes nothing (also with 3 episodes): the policy reads the latest (f, c) from the observation and
-  does not combine several feedbacks in memory. With 3 episodes at 1 cm, ep 3 (.980) is barely better than ep 2 (.971) since one feedback
-  plus contact search already suffices.
-- PPO also improves on its own expert teacher (.90 with the true hole), so the upper bound is not limited by the expert.
-- Versus ICL: the hidden-hole ICL transformer's best pass@2 (2000 demos) is ~.82-.87, and much lower at 100 / 200 demos.
+Three episodes (ep 2 / ep 3):
+| noise | seeds | BC init | **recurrent PPO** | pass@3 | oracle | zeroed c | GRU reset at boundaries |
+|---|---|---|---|---|---|---|---|
+| 1 cm | 4 | .730-.809 / .828-.867 | **.971-.979 / .980-.990** | .98-.99 | .332 / .484 | <= .006 | .957-.980 / .977-.984 |
+| 4 cm | 1 | .381 / .424 | **.656 / .836** | .848 | .053 / .125 | .002 / .006 | .646 / **.723** |
 
-Larger noise (local, seed 1):
-| config | BC init | final | oracle | zeroed c | shuffled c | GRU reset |
-|---|---|---|---|---|---|---|
-| e2-n2 (2 cm / .1 rad) | .004 / .574 | .012 / **.910** | .012 / .203 | .002 | .008 | .902 |
-| e2-n4 (4 cm / .2 rad) | .008 / .303 | .010 / **.668** | .012 / .068 | .000 | .018 | .637 |
-- The upper bound degrades gracefully: .98 (0-.5 cm), .97 (1 cm), .91 (2 cm), .67 (4 cm), always 3-10x the trusting oracle.
-- Interim (2026-11-18 morning): e3-n4 (3 eps, 4 cm, oracle .053 / .125) at PPO 204: ep2 .62, ep3 .74, so the third episode gains from the
-  second feedback (memory or more search; its GRU-reset control at the end will tell). e2-n4 seed 2 at PPO 161: ep2 .54.
-  Klone e2-n1 s1 at PPO 288: ep2 .96 (matches the local seed); klone e3-n1 s1 at PPO 120: .93 / .96. Klone e2-n0 still pending (the
-  noiseless result so far is the single local pilot seed).
+## Reading
+- **Upper bound for the ICL setting (2 episodes, exact feedback c = hole - f): ~.986 success on the attempt after feedback**, vs .90 for
+  the expert with the true hole and for the scripted oracle (expert on f + c). PPO improves on the expert it was distilled from (the
+  expert's failures are jams at the hole entrance, `2026-10-26-peg-expert.md`). The hidden-hole ICL transformer's best pass@2 (2000 demos)
+  is ~.82-.87 and much lower at 100 / 200 demos (`2026-11-16-icl-onpolicy-loop.md`), so there is a .1-.6+ gap to close.
+- **It uses the feedback**: zeroed or another task's (f, c) drops episode 2 to the blind level (<= .02) in every config.
+- **Noise up to ~2 cm costs little** (.986 -> .980 -> .970 -> .910 at 0 / .5 / 1 / 2 cm), while the oracle that trusts the noisy estimate
+  collapses (.90 -> .61 -> .33 -> .20). The policy goes to the feedback's estimate and corrects closed-loop from contact (peg / TCP
+  states react when the peg hits the box face). At 4 cm it reaches .67 (oracle .07). A Bayes-optimal ICL policy should show the same
+  robustness; the scripted oracle is not the right upper bound once feedback is noisy.
+- **Memory**: with one feedback in the observation the GRU state is not needed (reset at the boundary changes nothing, also for 3
+  episodes at 1 cm, where one feedback + contact search already gives .97). At 4 cm with 3 episodes the policy combines the two feedbacks:
+  ep 3 .836 vs ep 2 .656, and resetting the GRU at the boundaries cuts ep 3 to .723 (ep 2 unchanged). So memory over episodes matters only
+  once single feedbacks are uninformative.
+- Episode 1 stays blind (~.01): nothing in this reward makes ep-1 exploration pay; ep-1 behaviour is the BC prior (aim at the mean hole).
+- BC init (DAgger from the scripted oracle, expert labels) is already strong (.86-.90 noiseless) and PPO converges in 100-300 iterations.
+
+## Possible next steps
+- Give the ICL transformer the same noisy feedback to see how close it gets to these bounds (the ICL runs so far are noiseless).
+- Make ep-1 exploration matter (e.g. weaker feedback such as a direction or a distance only, or reward only on the last episode) to test
+  whether RL learns informative first attempts.
