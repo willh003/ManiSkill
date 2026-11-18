@@ -29,6 +29,7 @@ Background: `docs/claude/implementations/clutter-cond-env-and-icl.md`, results s
 - ICL degrades far faster than BC with less data; mostly it fails to lift anything (80-98% no-lift at ≤200 demos).
 - At 1000 demos ICL uses feedback (perf@k rises .15→.57, while the none/shuf_fb controls stay flat), but it is still below guessing at pass@4.
 - d1000 round-1 pool: per-attempt success on the demo tasks is .14/.24/.34/.48/.54/.60.
+- d1000 round 1 (local): pass .145/.254/.355/.453/.535/.596, no-lift .45→.25. No better than round 0 (pass@4 .518 locally); one round is noise-level.
 
 ## Next steps
 1. When the queue finishes, compare per-round pass@k/perf@k (rounds 0-4) against BC, guess and oracle for each demo count. Check whether on-policy rounds cut the no-lift rate.
