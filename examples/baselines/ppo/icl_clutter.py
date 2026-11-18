@@ -63,6 +63,8 @@ class Args:
     dropout: float = 0.0
     bc_onehot_only: bool = False  # BC sees obs[:61] + target one-hot only (no target pose / tcp->target)
     drop_qvel: bool = False  # zero joint velocities in the ICL student's input (copycat test)
+    rounds: int = 0  # on-policy rounds after round 0: roll out the student on every (demo layout, target), add to the pool, retrain
+    p_pool: float = 0.5  # fraction of each ICL batch whose context comes from the on-policy pool
     head: str = "gmm"  # gmm | diff (DDPM over the action chunk; needs --arch obj)
     exec_steps: int = 0  # steps executed per predicted chunk before re-planning (0 = whole chunk)
     ddim: int = 10
@@ -379,7 +381,8 @@ def build_ctx(tok, lid, ids, fb):
 
 
 # ------------------------------------------------------------------ training
-def train(model, bank, val, args, dev, run, tag, ctx):
+def train(model, bank, val, args, dev, run, tag, ctx, pool=None):
+    """pool (on-policy contexts): dict lid (P,), t (P,), tok (P, attempts, TOK) incl. real feedback bits."""
     obs, act, alive, tok = bank["obs"], bank["act"], bank["alive"], bank["tok"]
     Nl, _, T, _ = obs.shape
     idx = alive.nonzero()  # (n,3): layout, cond, t
@@ -408,6 +411,25 @@ def train(model, bank, val, args, dev, run, tag, ctx):
             return s, a, None, None
         ids, fb = search_contexts(cond, gen)
         c, m = build_ctx(src["tok"], lid, ids, fb)
+        if pool is not None and src is bank:
+            npool = int(args.p_pool * args.batch)
+            e = torch.randint(0, len(pool["lid"]), (npool,), generator=gen, device=dev)
+            plid, pcond = pool["lid"][e], pool["t"][e]
+            n_att = pool["tok"].shape[1]
+            j = torch.randint(0, n_att, (npool,), generator=gen, device=dev)  # number of earlier attempts in the context
+            L = src["alive"][plid, pcond].sum(-1)
+            pt = (torch.rand(npool, generator=gen, device=dev) * L).long()
+            ps = src["obs"][plid, pcond, pt].float()[:, :sdim]
+            ptt = torch.minimum(pt[:, None] + torch.arange(H, device=dev), (L - 1)[:, None])
+            pa = src["act"][plid[:, None], pcond[:, None], ptt].reshape(npool, -1)
+            pc = torch.zeros(npool, L_CTX, TOK, device=dev)
+            pm = torch.zeros(npool, L_CTX, dtype=torch.bool, device=dev)
+            for q in range(L_CTX):
+                k = j - 1 - q
+                ok = k >= 0
+                pc[:, q] = pool["tok"][e, k.clamp_min(0)] * ok[:, None]
+                pm[:, q] = ok
+            s, a, c, m = torch.cat([s[npool:], ps]), torch.cat([a[npool:], pa]), torch.cat([c[npool:], pc]), torch.cat([m[npool:], pm])
         return s, a, c, m
 
     gv = torch.Generator(device=dev).manual_seed(0)
@@ -434,7 +456,7 @@ def train(model, bank, val, args, dev, run, tag, ctx):
 
 # ------------------------------------------------------------------ evaluation
 @torch.no_grad()
-def evaluate(env, layouts, targets, policy_fn, attempts, T, dev, ctx_mode="real"):
+def evaluate(env, layouts, targets, policy_fn, attempts, T, dev, ctx_mode="real", keep=None):
     """Run `attempts` attempts per eval layout. policy_fn(obs, t, c, cmask, k) -> action. ctx_mode: real | none | shuf_fb.
     Returns per-attempt arrays."""
     N = layouts.shape[0]
@@ -467,6 +489,8 @@ def evaluate(env, layouts, targets, policy_fn, attempts, T, dev, ctx_mode="real"
         hist_ids = torch.cat([hist_ids, r["lifted"][:, None]], 1)
         hist_fb = torch.cat([hist_fb, r["succ"][:, None]], 1)
     res["lifted"] = torch.stack(res["lifted"], 1).tolist()
+    if keep is not None:
+        keep.append(hist_tok)
     return res
 
 
@@ -545,9 +569,9 @@ def main():
             return f.buf[:, t % E]
         return f
 
-    def fit(model, tag, ctx):
+    def fit(model, tag, ctx, pool=None):
         if args.load_dir is None:
-            results[f"{tag}_val_nll"] = train(model, bank, val, args, dev, run, tag, ctx=ctx)
+            results[f"{tag}_val_nll"] = train(model, bank, val, args, dev, run, tag, ctx=ctx, pool=pool)
             src = run.ckpt(f"{tag}-best.pt" if args.ckpt == "best" else f"{tag}.pt")
         else:
             src = f"{args.load_dir}/checkpoints/{tag}-best.pt" if args.ckpt == "best" else f"{args.load_dir}/checkpoints/{tag}.pt"
@@ -571,12 +595,31 @@ def main():
         results["bc"] = eval_all(gmm_fn(bc, BD, False), args.attempts, sampler=samp)
         results["bc_guess"] = eval_all(gmm_fn(bc, BD, False, rand_cond=True), args.attempts, sampler=samp)
         show("bc"), show("bc_guess")
-    if "icl" in methods:
+    def make_icl():
         if args.arch == "obj":
-            icl = fit((DiffObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.dropout, ddim=args.ddim) if args.head == "diff"
-                       else ObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout)).to(dev), "icl", True)
-        else:
-            icl = fit(GMMPolicy(S_OBS, A * args.chunk, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
+            return (DiffObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.dropout, ddim=args.ddim) if args.head == "diff"
+                    else ObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout)).to(dev)
+        return GMMPolicy(S_OBS, A * args.chunk, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev)
+
+    @torch.no_grad()
+    def collect_pool(model):
+        """Student attempts (real feedback) on every (demo layout, target) -> pool entries."""
+        nl = bank["layout"].shape[0]
+        lid = torch.arange(nl, device=dev).repeat_interleave(K)
+        tgt = torch.arange(K, device=dev).repeat(nl)
+        toks, fn = [], gmm_fn(model, S_OBS, True)
+        for i in range(0, len(lid), N):
+            samp.reset()
+            keep = []
+            evaluate(env, bank["layout"][lid[i:i + N]], tgt[i:i + N], fn, args.attempts, T, dev, "real", keep=keep)
+            toks.append(keep[0])
+        tok = torch.cat(toks)
+        succ = tok[..., -1]
+        print(f"  pool: {len(lid)} sequences; per-attempt succ on demo tasks {[round(x, 3) for x in succ.mean(0).tolist()]}", flush=True)
+        return dict(lid=lid, t=tgt, tok=tok), succ.mean(0).tolist()
+
+    if "icl" in methods:
+        icl = fit(make_icl(), "icl", True)
         for mode in ("real", "none", "shuf_fb"):
             results[f"icl_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
             show(f"icl_{mode}")
@@ -586,6 +629,22 @@ def main():
             results[f"icl_real_{mode}{temp}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, sampler=samp)
             show(f"icl_real_{mode}{temp}")
         samp.mode, samp.temp = args.sample, args.temp
+        pool = None
+        results["rounds"] = [dict(round=0, real=results["icl_real"])]
+        for r in range(1, args.rounds + 1):
+            new, demo_succ = collect_pool(icl)
+            results["rounds"][-1]["demo_task_succ"] = demo_succ
+            pool = new if pool is None else {k: torch.cat([pool[k], new[k]]) for k in pool}
+            icl = fit(make_icl(), f"icl-r{r}", True, pool=pool)
+            res_r = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, sampler=samp)
+            results["rounds"].append(dict(round=r, real=res_r, pool=len(pool["lid"])))
+            results[f"icl_r{r}_real"] = res_r
+            show(f"icl_r{r}_real")
+            run.save_json("results.json", results)
+        if args.rounds:
+            for mode in ("none", "shuf_fb"):
+                results[f"icl_r{args.rounds}_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
+                show(f"icl_r{args.rounds}_{mode}")
     es = results["expert"]["succ"][0]
     results["oracle_pass"] = [es * min(1.0, (k + 1) / K) for k in range(args.attempts)]
     results["guess_pass_ref"] = [es * (1 - (1 - 1 / K) ** (k + 1)) for k in range(args.attempts)]
