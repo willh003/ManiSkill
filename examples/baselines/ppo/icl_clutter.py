@@ -115,7 +115,7 @@ def collect_bank(env, expert, n_layouts, seed, T, dev):
     g = torch.Generator(device=dev).manual_seed(seed)
     N = env.unwrapped.num_envs
     keep = dict(obs=[], act=[], alive=[], tok=[], layout=[])
-    have, tried, b = 0, 0, 0
+    have, tried, n_ok, b = 0, 0, 0, 0
     pol = lambda o, t: expert.actor_mean(o)
     while have < n_layouts:
         lay = env.unwrapped.sample_layout(N, gen=g)
@@ -129,11 +129,12 @@ def collect_bank(env, expert, n_layouts, seed, T, dev):
         keep["layout"].append(lay[idx])
         have += len(idx)
         tried += N
+        n_ok += int(ok.sum())
         b += 1
         print(f"  bank batch {b}: kept {len(idx)}/{N} layouts (all {K} conditions succeed); total {have}/{n_layouts}; "
               f"per-cond succ {[round(r['succ'].float().mean().item(), 3) for r in rs]}", flush=True)
     out = {k: torch.cat(v) for k, v in keep.items()}
-    out["keep_frac"] = have / tried
+    out["keep_frac"] = n_ok / tried  # fraction of sampled layouts where all K conditioned rollouts succeed
     return out
 
 
