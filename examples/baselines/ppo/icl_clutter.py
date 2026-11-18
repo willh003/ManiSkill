@@ -570,11 +570,11 @@ def main():
         return f
 
     def fit(model, tag, ctx, pool=None):
-        if args.load_dir is None:
+        name = f"{tag}-best.pt" if args.ckpt == "best" else f"{tag}.pt"
+        src = f"{args.load_dir}/checkpoints/{name}" if args.load_dir else None
+        if src is None or not os.path.exists(src):  # resume: load existing checkpoints, train missing ones
             results[f"{tag}_val_nll"] = train(model, bank, val, args, dev, run, tag, ctx=ctx, pool=pool)
-            src = run.ckpt(f"{tag}-best.pt" if args.ckpt == "best" else f"{tag}.pt")
-        else:
-            src = f"{args.load_dir}/checkpoints/{tag}-best.pt" if args.ckpt == "best" else f"{args.load_dir}/checkpoints/{tag}.pt"
+            src = run.ckpt(name)
         model.load_state_dict(torch.load(src, map_location=dev))
         print(f"[{tag}] evaluating {src}")
         return model.eval()
@@ -611,8 +611,12 @@ def main():
         for i in range(0, len(lid), N):
             samp.reset()
             keep = []
-            evaluate(env, bank["layout"][lid[i:i + N]], tgt[i:i + N], fn, args.attempts, T, dev, "real", keep=keep)
-            toks.append(keep[0])
+            li, ti = lid[i:i + N], tgt[i:i + N]
+            n = len(li)
+            if n < N:  # env needs exactly num_envs tasks: pad with repeats, drop them after
+                li, ti = torch.cat([li, li[:1].expand(N - n)]), torch.cat([ti, ti[:1].expand(N - n)])
+            evaluate(env, bank["layout"][li], ti, fn, args.attempts, T, dev, "real", keep=keep)
+            toks.append(keep[0][:n])
         tok = torch.cat(toks)
         succ = tok[..., -1]
         print(f"  pool: {len(lid)} sequences; per-attempt succ on demo tasks {[round(x, 3) for x in succ.mean(0).tolist()]}", flush=True)
