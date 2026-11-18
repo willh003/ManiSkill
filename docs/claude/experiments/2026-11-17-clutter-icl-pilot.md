@@ -30,3 +30,15 @@ Also: val NLL bottoms out at 5-10k steps then explodes (log-std collapse); eval 
 
 ## Next (user choice: stay end-to-end)
 Action chunking (`--chunk 8`, GMM over 8-step chunks, open-loop), 1000 layouts, final expert checkpoint.
+
+## Chunked GMM, 1000 layouts, final expert (`logs/runs/icl-clutter-obj-c8-d1000-s1`)
+`--arch obj --chunk 8 --demos 1000 --steps 20000`, expert final_ckpt (attempt-1 .996; bank keep .973).
+| model | attempt 1 | pass@4 | pass@6 | no-lift |
+|---|---|---|---|---|
+| BC obj c8 (target flag) | .691 | .760 | .771 | .31 |
+| BC obj c8, random cond | .156 | .486 | .596 | .31 |
+| ICL obj c8 (sticky / step / mean) | .025 / .035 / .041 | .061 / .080 / .064 | .076 / .100 / .064 | .85 |
+| ICL controls none / shuf_fb | .031 / .025 | .061 / .115 | .062 / .170 | .84 / .75 |
+Reading: 8-step open-loop chunks *hurt* BC (.873 -> .691 even with 5x data; 31% no-lift: open-loop grasps miss).
+ICL still does not commit with an empty context (~85% no-lift). A GMM head (per step or per chunk) cannot represent the
+4-way object choice here: the empty-context ICL problem is pure 4-mode BC and it fails at ~3%.
