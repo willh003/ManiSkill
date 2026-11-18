@@ -28,5 +28,23 @@ Submitted with `scripts/cluster/submit_cmd.sh rl2-peg-<cfg>` (3 seeds in paralle
 Klone's gscratch was very slow on 2026-11-17 evening: jobs on g3118 and g3117 sat >15 min in uninterruptible IO importing torch; the g3118
 job was cancelled and resubmitted with `SBATCH_EXTRA=--exclude=g3118`. Local copies `rl2-peg-{e2-n1,e3-n1}-loc-s1` run meanwhile.
 
-## Results
-(pending)
+## Results (deterministic eval, 512 tasks; success per episode)
+| config | run(s) | BC init | final (300 PPO iters) | oracle | zeroed c | shuffled c | GRU reset at boundary |
+|---|---|---|---|---|---|---|---|
+| e2-n0 | pilot-s1 (local) | .004 / .863 | .014 / **.984** | .012 / .902 | .002 | .004 | .982 |
+| e2-n05 | s1, s2, s3 (klone) | .004 / .805, .861, .875 | .010, .012, .002 / **.975, .984, .980** | .012 / .607 | .000-.006 | .006-.010 | .969-.980 |
+| e2-n1 | loc-s1 | .004 / .803 | .008 / **.967** | .012 / .330 | .000 | .006 | .963 |
+| e3-n1 | loc-s1 | .002 / .730 / .828 | .004 / **.971 / .980** | .010 / .332 / .484 | .002 / .000 | .006 / .006 | .965 / .977 |
+
+- **The RL upper bound is ~.97-.98 on the attempt after feedback at noise up to 1 cm**, far above the scripted oracle that trusts the
+  noisy estimate (.33 at 1 cm). The policy uses the feedback to get near the hole and then corrects closed-loop from contact (the peg / TCP
+  state reacts when the peg hits the box face), so 1 cm of noise is almost free. Without the feedback (zeroed or another task's), ep 2
+  falls to the blind level (<= .01), so the coarse location comes only from the feedback.
+- Episode 1 stays blind (~.01): with this reward there is nothing to gain in ep 1 except its own success.
+- Resetting the GRU state at the boundary changes nothing (also with 3 episodes): the policy reads the latest (f, c) from the observation and
+  does not combine several feedbacks in memory. With 3 episodes at 1 cm, ep 3 (.980) is barely better than ep 2 (.971) since one feedback
+  plus contact search already suffices.
+- PPO also improves on its own expert teacher (.90 with the true hole), so the upper bound is not limited by the expert.
+- Versus ICL: the hidden-hole ICL transformer's best pass@2 (2000 demos) is ~.82-.87, and much lower at 100 / 200 demos.
+
+Running: e2-n2 (2 cm, oracle .203) and e2-n4 (4 cm, oracle .068) locally; klone e2-n1, e2-n0, e3-n1 (3 seeds each) queued / running.
