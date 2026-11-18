@@ -36,6 +36,7 @@ class Args:
     fb_noise_yaw: float = 0.0
     split: str = "wide_corner"
     same_init: bool = True
+    memoryless: bool = False  # actor ignores the GRU (feedforward on the same obs); baseline for the memory ablation
     eval_seed: int = 12345
     hidden: int = 256
     # BC
@@ -93,8 +94,9 @@ class Norm(nn.Module):
 class Actor(nn.Module):
     """enc -> GRU; head on [enc, gru] (skip path). forward(x (B,T,D), h (1,B,H)) -> mean (B,T,A), h."""
 
-    def __init__(self, D, A, H):
+    def __init__(self, D, A, H, memoryless=False):
         super().__init__()
+        self.memoryless = memoryless
         self.norm = Norm(D)
         self.enc = nn.Sequential(nn.Linear(D, H), nn.Tanh(), nn.Linear(H, H), nn.Tanh())
         self.gru = nn.GRU(H, H, batch_first=True)
@@ -104,6 +106,8 @@ class Actor(nn.Module):
 
     def forward(self, x, h=None):
         e = self.enc(self.norm(x))
+        if self.memoryless:
+            return self.head(torch.cat([e, torch.zeros_like(e)], -1)), h
         g, h = self.gru(e, h)
         return self.head(torch.cat([e, g], -1)), h
 
@@ -126,7 +130,7 @@ class Trainer:
         self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init)
         self.expert = load_expert(args.expert_checkpoint, self.dev)
         self.N, self.T, self.A = args.num_envs, self.env.T, self.env.A
-        self.actor = Actor(self.env.actor_dim, self.A, args.hidden).to(self.dev)
+        self.actor = Actor(self.env.actor_dim, self.A, args.hidden, args.memoryless).to(self.dev)
         self.critic = Critic(self.env.critic_dim, args.hidden).to(self.dev)
         g = torch.Generator(device=self.dev).manual_seed(args.eval_seed)
         eg = checker_sample(512, "all", self.dev, g, args.split)
@@ -336,6 +340,7 @@ def main(args):
         print("BC init eval:", ref["bc_eval"], flush=True)
     tr.ppo(rd, start, opt_state)
     res = dict(ref=ref, final=tr.eval(), controls={c: tr.eval(c) for c in ("shuf", "zero", "hreset")})
+    res["succ_matrix"] = tr.run_episode("student", goals=tr.eval_goals, seed=args.eval_seed)["succ"][:512].int().tolist()  # (512 tasks, n_ep)
     rd.save_json("results.json", res)
     print(json.dumps(res, indent=1))
     print("ALLDONE", flush=True)
