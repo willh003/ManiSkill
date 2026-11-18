@@ -61,6 +61,7 @@ class Args:
     temp: float = 0.5  # temperature on mixture logits when sampling a component
     icl_samples: str = ""  # extra ICL evals (real ctx) with other samplers, e.g. "step:1.0,mean:1,sticky:1.0"
     dropout: float = 0.0
+    bc_onehot_only: bool = False  # BC sees obs[:61] + target one-hot only (no target pose / tcp->target)
     drop_qvel: bool = False  # zero joint velocities in the ICL student's input (copycat test)
     ctx_path: str = "attn"  # attn: context tokens attended to; cat: flattened context concatenated to the obs input
     ckpt: str = "best"  # weights evaluated after training: best (lowest val NLL) | final
@@ -399,8 +400,9 @@ def main():
                 oh = F.one_hot(f.cond, K).float()
                 s[:, LAY["target_onehot"]] = oh
                 tp = o[:, LAY["obj_pose"]].reshape(-1, K, 7)[torch.arange(len(o), device=dev), f.cond]
-                s[:, LAY["target_pose"]] = tp
-                s[:, LAY["tcp_to_target"]] = tp[:, :3] - o[:, LAY["tcp_pose"]][:, :3]
+                if sdim == OBS_DIM:
+                    s[:, LAY["target_pose"]] = tp
+                    s[:, LAY["tcp_to_target"]] = tp[:, :3] - o[:, LAY["tcp_pose"]][:, :3]
             logits, mu, _ = model(s, c if ctx else None, m if ctx else None)
             return samp(logits, mu)
         return f
@@ -421,9 +423,10 @@ def main():
               f"repeat {[round(x, 3) for x in r['repeat']]} nolift {[round(x, 3) for x in r['nolift']]}", flush=True)
 
     if "bc" in methods:
-        bc = fit(GMMPolicy(OBS_DIM, A, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
-        results["bc"] = eval_all(gmm_fn(bc, OBS_DIM, False), args.attempts, sampler=samp)
-        results["bc_guess"] = eval_all(gmm_fn(bc, OBS_DIM, False, rand_cond=True), args.attempts, sampler=samp)
+        BD = LAY["target_onehot"].stop if args.bc_onehot_only else OBS_DIM
+        bc = fit(GMMPolicy(BD, A, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
+        results["bc"] = eval_all(gmm_fn(bc, BD, False), args.attempts, sampler=samp)
+        results["bc_guess"] = eval_all(gmm_fn(bc, BD, False, rand_cond=True), args.attempts, sampler=samp)
         show("bc"), show("bc_guess")
     if "icl" in methods:
         icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
