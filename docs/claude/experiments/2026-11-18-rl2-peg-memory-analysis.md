@@ -15,3 +15,11 @@ At ep2 start the GRU holds nothing extra (obs has ep-1 feedback). GRU state is a
 2. Biggest GRU use is short-term within-episode history (reset every few steps costs .2-.4).
 3. Cross-episode memory exists (ep-1 noise decodable at ep3 start, wrong memory costs .16) but is used only as a modest, early-episode refinement (~.06 gain).
 Caveats: one seed/checkpoint; linear probes show availability, interventions show use. Not yet run: 1 cm 3-ep and 2-ep 4 cm checkpoints.
+
+## Memoryless baseline (`--memoryless`, run `rl2-peg-e3-n4-ff-loc-s1`, 3 eps, 4 cm, seed 1)
+Same obs / recipe, GRU bypassed (head input = [enc, 0]), 300 PPO iters (~15 s/iter).
+Final eval (ep2 / ep3 / pass@3): memoryless .697 / .844 / .873 vs GRU `e3-n4-loc-s1` .656 / .836 / .848. Zeroed / shuffled feedback -> ~0 for both.
+-> The GRU is NOT needed in this config: a feedforward policy on the same observation matches it (single seed). The within-episode reset drop and the ep-1 noise
+carried in h are not necessary for performance (the earlier K-reset drop was largely a distribution-shift artifact of resetting a net trained with memory).
+ep3 > ep2 without memory too: the ep-3 observation holds ep-2's feedback, which is more informative (the ep-2 policy corrected from contact, so f2 is nearer the hole).
+Caveat: head capacity slightly smaller than GRU actor. 8-episode runs (`rl2-peg-e8-n{0,4}-s1`, klone) pending.
