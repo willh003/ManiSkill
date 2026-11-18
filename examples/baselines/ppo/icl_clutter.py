@@ -61,6 +61,7 @@ class Args:
     temp: float = 0.5  # temperature on mixture logits when sampling a component
     icl_samples: str = ""  # extra ICL evals (real ctx) with other samplers, e.g. "step:1.0,mean:1,sticky:1.0"
     dropout: float = 0.0
+    ctx_path: str = "attn"  # attn: context tokens attended to; cat: flattened context concatenated to the obs input
     ckpt: str = "best"  # weights evaluated after training: best (lowest val NLL) | final
     load_dir: Optional[str] = None  # skip training; load <load_dir>/checkpoints/{bc,icl}[-best].pt
     methods: str = "bc,icl"
@@ -146,12 +147,15 @@ def collect_bank(env, expert, n_layouts, seed, T, dev):
 class GMMPolicy(nn.Module):
     """obs token + up to L_CTX context tokens -> transformer -> GMM over actions (from the obs token)."""
 
-    def __init__(self, obs_dim, A, ctx, d, layers, heads, mix, dropout=0.0):
+    def __init__(self, obs_dim, A, ctx, d, layers, heads, mix, dropout=0.0, path="attn"):
         super().__init__()
         self.obs_dim, self.A, self.ctx, self.mix = obs_dim, A, ctx, mix
+        self.cat = bool(ctx) and path == "cat"
+        if self.cat:
+            self.ctx = False  # no context tokens; the context enters through obs_proj
         self.register_buffer("s_mean", torch.zeros(obs_dim)), self.register_buffer("s_std", torch.ones(obs_dim))
         self.register_buffer("c_mean", torch.zeros(TOK)), self.register_buffer("c_std", torch.ones(TOK))
-        self.obs_proj = nn.Sequential(nn.Linear(obs_dim, d), nn.GELU(), nn.Linear(d, d))
+        self.obs_proj = nn.Sequential(nn.Linear(obs_dim + (L_CTX * (TOK + 1) if self.cat else 0), d), nn.GELU(), nn.Linear(d, d))
         if ctx:
             self.tok_proj = nn.Linear(TOK, d)
             self.pos_emb = nn.Parameter(torch.randn(L_CTX, d) * 0.02)  # recency slot (0 = most recent)
@@ -162,13 +166,17 @@ class GMMPolicy(nn.Module):
 
     def set_norm(self, s, c=None):
         self.s_mean.copy_(s.mean(0)), self.s_std.copy_(s.std(0).clamp_min(1e-3))
-        if c is not None:
+        if c is not None and (self.ctx or self.cat):
             self.c_mean.copy_(c.mean(0)), self.c_std.copy_(c.std(0).clamp_min(1e-3))
             self.c_mean[2 * K:], self.c_std[2 * K:] = 0.0, 1.0  # binary flags as is
 
     def forward(self, s, c=None, cmask=None):
         """s (B,obs_dim); c (B,L_CTX,TOK) most recent first; cmask (B,L_CTX) True = present. -> logits (B,M), mu, log_std (B,M,A)."""
-        o = self.obs_proj((s - self.s_mean) / self.s_std) + self.obs_emb
+        x = (s - self.s_mean) / self.s_std
+        if self.cat:
+            cn = ((c - self.c_mean) / self.c_std).clamp(-5, 5) * cmask[..., None]
+            x = torch.cat([x, cn.flatten(1), cmask.float()], 1)
+        o = self.obs_proj(x) + self.obs_emb
         seq, pad = o[:, None], torch.zeros(len(s), 1, dtype=torch.bool, device=s.device)
         if self.ctx:
             ct = self.tok_proj(((c - self.c_mean) / self.c_std).clamp(-5, 5)) + self.pos_emb
@@ -413,7 +421,7 @@ def main():
         results["bc_guess"] = eval_all(gmm_fn(bc, OBS_DIM, False, rand_cond=True), args.attempts, sampler=samp)
         show("bc"), show("bc_guess")
     if "icl" in methods:
-        icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "icl", True)
+        icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path).to(dev), "icl", True)
         for mode in ("real", "none", "shuf_fb"):
             results[f"icl_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
             show(f"icl_{mode}")
