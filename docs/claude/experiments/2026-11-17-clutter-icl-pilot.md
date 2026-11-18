@@ -42,3 +42,25 @@ Action chunking (`--chunk 8`, GMM over 8-step chunks, open-loop), 1000 layouts, 
 Reading: 8-step open-loop chunks *hurt* BC (.873 -> .691 even with 5x data; 31% no-lift: open-loop grasps miss).
 ICL still does not commit with an empty context (~85% no-lift). A GMM head (per step or per chunk) cannot represent the
 4-way object choice here: the empty-context ICL problem is pure 4-mode BC and it fails at ~3%.
+
+## Diffusion head, 1000 layouts (`logs/runs/icl-clutter-obj-diff-c8e4-d1000-s1`) -- first working ICL
+`--arch obj --head diff --chunk 8 --exec-steps 4 --steps 20000` (DDPM T=100 cosine, eps-pred, DDIM 10 steps, residual MLP
+denoiser on the object-centric encoding). Plot `logs/renders/icl-clutter/obj-diff-c8e4-d1000-s1.png` (`icl_clutter_plot.py`).
+| model | pass@1 | pass@4 | pass@6 | perf@6 | no-lift k=1 -> 6 |
+|---|---|---|---|---|---|
+| expert | .994 | | | | |
+| BC diff (target flag) | .980 | .994 | .994 | .961 | .02 -> .04 |
+| BC diff, random cond (memoryless) | .275 | .705 | .811 | .232 | ~.02 |
+| ICL diff, real feedback | .129 | .514 | .693 | .641 | .45 -> .22 |
+| ICL, no context | .123 | .432 | .551 | .131 | ~.45 |
+| ICL, shuffled feedback | .133 | .381 | .488 | .146 | ~.38 |
+| oracle search | .25 | .994 | .994 | | |
+Reading:
+- Diffusion fixes BC (.98 ~ expert) and lets ICL commit. **ICL uses the feedback**: perf@k rises .13 -> .64 over 6
+  attempts only with the real context; no-context and shuffled-feedback stay flat (~.13-.19). Repeat rate lower with
+  real feedback (.02-.08) than shuffled (.24-.30) or none (up to .25).
+- But ICL is still *below memoryless guessing* in pass@k (.514 vs .705 at k=4): its blind attempts commit poorly
+  (45% no-lift at attempt 1 vs 2% for BC-guess). It behaves more like "lift once the target is known" than an efficient
+  searcher; perf@k still climbs at k=5-6 although the training contexts never exceed 3 wrong attempts.
+Next ideas: more ICL training / data (blind attempt is the bottleneck), temperature or more DDIM steps for the blind
+attempt, seeds 2-3, sweep demos 200/1000/3000 on klone.
