@@ -1,5 +1,5 @@
 """Seed-averaged training curves of rl2_peg runs per feedback-noise level (2-episode configs). Usage: python rl2_peg_curves.py OUT.png
-Palette: method = shades of blue (#124690), oracle = shades of pink (#E97BA4). Only finished runs (results.json present) are averaged."""
+Palette: method = shades of blue (#124690). Only finished runs (results.json present) are averaged."""
 import glob, json, sys, re, collections, os
 import numpy as np
 import matplotlib; matplotlib.use("Agg")
@@ -20,7 +20,7 @@ fig, ax = plt.subplots(1, 2, figsize=(12, 4.5), sharey=True)
 levels = sorted(runs)
 for i, nz in enumerate(levels):
     t = i / (len(levels) - 1)
-    c, co = shade("#124690", t), shade("#E97BA4", t)
+    c = shade("#124690", t)
     S = {"t": collections.defaultdict(list), "e": collections.defaultdict(list)}
     for d in runs[nz]:
         for l in open(d + "/metrics.jsonl"):
@@ -30,8 +30,7 @@ for i, nz in enumerate(levels):
             if "eval_all_succ_ep2" in m: S["e"][m["step"]].append(m["eval_all_succ_ep2"])
     for a, k in zip(ax, "te"):
         xs = sorted(S[k]); a.plot(xs, [np.mean(S[k][x]) for x in xs], color=c, lw=2, label=f"{nz:g} cm (n={len(runs[nz])})")
-    ax[1].axhline(ORACLE[nz], color=co, ls="--", lw=1.2, label="scripted oracle" if i == len(levels) - 1 else None)
 ax[0].set_title("train success, episode 2 (mean over seeds)"); ax[1].set_title("eval success, episode 2 (512 tasks, mean over seeds)")
 for a in ax: a.set_xlabel("step (PPO phase)"); a.grid(alpha=.3)
-ax[0].set_ylabel("success"); ax[0].legend(title="recurrent PPO, xy noise"); ax[1].legend(loc="lower right")
+ax[0].set_ylabel("success"); ax[0].legend(title="recurrent PPO, xy noise")
 plt.tight_layout(); plt.savefig(sys.argv[1], dpi=130)
