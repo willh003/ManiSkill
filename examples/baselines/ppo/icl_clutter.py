@@ -63,6 +63,9 @@ class Args:
     dropout: float = 0.0
     bc_onehot_only: bool = False  # BC sees obs[:61] + target one-hot only (no target pose / tcp->target)
     drop_qvel: bool = False  # zero joint velocities in the ICL student's input (copycat test)
+    head: str = "gmm"  # gmm | diff (DDPM over the action chunk; needs --arch obj)
+    exec_steps: int = 0  # steps executed per predicted chunk before re-planning (0 = whole chunk)
+    ddim: int = 10
     chunk: int = 1  # GMM over H-step action chunks, executed open-loop (one mixture sample per chunk)
     arch: str = "flat"  # flat: GMMPolicy over the flat obs; obj: object-centric ObjPolicy
     ctx_path: str = "attn"  # attn: context tokens attended to; cat: flattened context concatenated to the obs input
@@ -254,17 +257,76 @@ class ObjPolicy(nn.Module):
         flags = [12] if self.mode == "bc" else [12 + 5 * j + i for j in range(L_CTX) for i in range(3)]
         self.o_mean[flags], self.o_std[flags] = 0.0, 1.0  # binary flags as is
 
-    def forward(self, s, c=None, cmask=None):
+    def encode(self, s, c=None, cmask=None):
         prop, of = self.feats(s, c, cmask)
         p = self.p_proj((prop - self.p_mean) / self.p_std) + self.p_emb
         o = self.o_proj(((of - self.o_mean) / self.o_std).clamp(-10, 10)) + self.id_emb
-        h = self.enc(torch.cat([p[:, None], o], 1))[:, 0]
-        out = self.head(h)
+        return self.enc(torch.cat([p[:, None], o], 1))[:, 0]
+
+    def forward(self, s, c=None, cmask=None):
+        out = self.head(self.encode(s, c, cmask))
         M, A = self.mix, self.A
         return out[:, :M], out[:, M:M + M * A].reshape(-1, M, A), out[:, M + M * A:].reshape(-1, M, A).clamp(-5, 1)
 
     def nll(self, s, a, c=None, cmask=None):
         return gmm_nll(*self(s, c, cmask), a)
+
+
+class DiffObjPolicy(ObjPolicy):
+    """ObjPolicy encoder + DDPM head over a flattened action chunk (A here = chunk * action dim). Train: epsilon-prediction
+    MSE (`nll` returns it so the training loop is shared). Sample: DDIM with `ddim` steps from Gaussian noise, x0 clipped to
+    [-1, 1]; the initial noise is what picks the mode."""
+
+    diff = True
+
+    def __init__(self, mode, A, d, layers, heads, dropout=0.0, T=100, ddim=10, hidden=512):
+        super().__init__(mode, A, d, layers, heads, 1, dropout)
+        del self.head
+        self.T, self.ddim = T, ddim
+        t = torch.arange(T + 1) / T
+        ab = torch.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2
+        ab = (ab / ab[0])[1:].clamp(1e-5, 0.9999)  # alpha_bar for t = 1..T (index t-1)
+        self.register_buffer("ab", ab)
+        self.temb = nn.Sequential(nn.Linear(64, d), nn.GELU(), nn.Linear(d, d))
+        self.inp = nn.Linear(A + 2 * d, hidden)
+        self.blocks = nn.ModuleList(nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, hidden), nn.GELU(), nn.Linear(hidden, hidden)) for _ in range(3))
+        self.out = nn.Sequential(nn.LayerNorm(hidden), nn.Linear(hidden, A))
+
+    def _temb(self, t):
+        f = torch.exp(torch.arange(32, device=t.device) * (-math.log(1000.0) / 32))
+        x = t.float()[:, None] * f
+        return self.temb(torch.cat([x.sin(), x.cos()], 1))
+
+    def eps(self, x, t, h):
+        z = self.inp(torch.cat([x, self._temb(t), h], 1))
+        for b in self.blocks:
+            z = z + b(z)
+        return self.out(z)
+
+    def nll(self, s, a, c=None, cmask=None):
+        h = self.encode(s, c, cmask)
+        t = torch.randint(1, self.T + 1, (len(a),), device=a.device)
+        ab = self.ab[t - 1][:, None]
+        n = torch.randn_like(a)
+        return F.mse_loss(self.eps(ab.sqrt() * a + (1 - ab).sqrt() * n, t, h), n)
+
+    @torch.no_grad()
+    def sample(self, s, c=None, cmask=None):
+        h = self.encode(s, c, cmask)
+        x = torch.randn(len(s), self.A, device=s.device)
+        ts = torch.linspace(self.T, 1, self.ddim, device=s.device).round().long()
+        for i, t in enumerate(ts):
+            tt = t.expand(len(s))
+            ab = self.ab[t - 1]
+            e = self.eps(x, tt, h)
+            x0 = ((x - (1 - ab).sqrt() * e) / ab.sqrt()).clamp(-1, 1)
+            if i + 1 < len(ts):
+                abn = self.ab[ts[i + 1] - 1]
+                e = (x - ab.sqrt() * x0) / (1 - ab).sqrt()
+                x = abn.sqrt() * x0 + (1 - abn).sqrt() * e
+            else:
+                x = x0
+        return x
 
 
 class Sampler:
@@ -473,10 +535,14 @@ def main():
                     s[:, LAY["target_pose"]] = tp
                     s[:, LAY["tcp_to_target"]] = tp[:, :3] - o[:, LAY["tcp_pose"]][:, :3]
             H = args.chunk
-            if t % H == 0:
-                logits, mu, _ = model(s, c if ctx else None, m if ctx else None)
-                f.buf = samp(logits, mu).reshape(len(s), H, A)
-            return f.buf[:, t % H]
+            E = args.exec_steps or H
+            if t % E == 0:
+                if getattr(model, "diff", False):
+                    f.buf = model.sample(s, c if ctx else None, m if ctx else None).reshape(len(s), H, A)
+                else:
+                    logits, mu, _ = model(s, c if ctx else None, m if ctx else None)
+                    f.buf = samp(logits, mu).reshape(len(s), H, A)
+            return f.buf[:, t % E]
         return f
 
     def fit(model, tag, ctx):
@@ -498,7 +564,8 @@ def main():
         BD = LAY["target_onehot"].stop if args.bc_onehot_only else OBS_DIM
         if args.arch == "obj":
             BD = LAY["target_onehot"].stop
-            bc = fit(ObjPolicy("bc", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
+            bc = fit((DiffObjPolicy("bc", A * args.chunk, args.d, args.layers, args.heads, args.dropout, ddim=args.ddim) if args.head == "diff"
+                      else ObjPolicy("bc", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout)).to(dev), "bc", False)
         else:
             bc = fit(GMMPolicy(BD, A * args.chunk, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
         results["bc"] = eval_all(gmm_fn(bc, BD, False), args.attempts, sampler=samp)
@@ -506,7 +573,8 @@ def main():
         show("bc"), show("bc_guess")
     if "icl" in methods:
         if args.arch == "obj":
-            icl = fit(ObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "icl", True)
+            icl = fit((DiffObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.dropout, ddim=args.ddim) if args.head == "diff"
+                       else ObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout)).to(dev), "icl", True)
         else:
             icl = fit(GMMPolicy(S_OBS, A * args.chunk, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
         for mode in ("real", "none", "shuf_fb"):
