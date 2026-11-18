@@ -59,6 +59,10 @@ class Args:
     mix: int = 5  # GMM components
     sample: str = "sticky"  # GMM action at rollout: sticky | step | mean
     temp: float = 0.5  # temperature on mixture logits when sampling a component
+    icl_samples: str = ""  # extra ICL evals (real ctx) with other samplers, e.g. "step:1.0,mean:1,sticky:1.0"
+    dropout: float = 0.0
+    ckpt: str = "best"  # weights evaluated after training: best (lowest val NLL) | final
+    load_dir: Optional[str] = None  # skip training; load <load_dir>/checkpoints/{bc,icl}[-best].pt
     methods: str = "bc,icl"
     seed: int = 1
     eval_seed: int = 12345
@@ -142,7 +146,7 @@ def collect_bank(env, expert, n_layouts, seed, T, dev):
 class GMMPolicy(nn.Module):
     """obs token + up to L_CTX context tokens -> transformer -> GMM over actions (from the obs token)."""
 
-    def __init__(self, obs_dim, A, ctx, d, layers, heads, mix):
+    def __init__(self, obs_dim, A, ctx, d, layers, heads, mix, dropout=0.0):
         super().__init__()
         self.obs_dim, self.A, self.ctx, self.mix = obs_dim, A, ctx, mix
         self.register_buffer("s_mean", torch.zeros(obs_dim)), self.register_buffer("s_std", torch.ones(obs_dim))
@@ -152,7 +156,7 @@ class GMMPolicy(nn.Module):
             self.tok_proj = nn.Linear(TOK, d)
             self.pos_emb = nn.Parameter(torch.randn(L_CTX, d) * 0.02)  # recency slot (0 = most recent)
         self.obs_emb = nn.Parameter(torch.zeros(d))
-        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=0.0, batch_first=True, norm_first=True, activation="gelu")
+        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=dropout, batch_first=True, norm_first=True, activation="gelu")
         self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, mix * (2 * A + 1)))
 
@@ -388,21 +392,37 @@ def main():
             return samp(logits, mu)
         return f
 
+    def fit(model, tag, ctx):
+        if args.load_dir is None:
+            results[f"{tag}_val_nll"] = train(model, bank, val, args, dev, run, tag, ctx=ctx)
+            src = run.ckpt(f"{tag}-best.pt" if args.ckpt == "best" else f"{tag}.pt")
+        else:
+            src = f"{args.load_dir}/checkpoints/{tag}-best.pt" if args.ckpt == "best" else f"{args.load_dir}/checkpoints/{tag}.pt"
+        model.load_state_dict(torch.load(src, map_location=dev))
+        print(f"[{tag}] evaluating {src}")
+        return model.eval()
+
+    def show(name):
+        r = results[name]
+        print(f"{name}: pass {[round(x, 3) for x in r['pass']]} succ {[round(x, 3) for x in r['succ']]} "
+              f"repeat {[round(x, 3) for x in r['repeat']]} nolift {[round(x, 3) for x in r['nolift']]}", flush=True)
+
     if "bc" in methods:
-        bc = GMMPolicy(OBS_DIM, A, False, args.d, args.layers, args.heads, args.mix).to(dev)
-        results["bc_val_nll"] = train(bc, bank, val, args, dev, run, "bc", ctx=False)
-        bc.eval()
+        bc = fit(GMMPolicy(OBS_DIM, A, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
         results["bc"] = eval_all(gmm_fn(bc, OBS_DIM, False), args.attempts, sampler=samp)
         results["bc_guess"] = eval_all(gmm_fn(bc, OBS_DIM, False, rand_cond=True), args.attempts, sampler=samp)
-        print("BC pass", results["bc"]["pass"], "\nBC guess pass", results["bc_guess"]["pass"], flush=True)
+        show("bc"), show("bc_guess")
     if "icl" in methods:
-        icl = GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix).to(dev)
-        results["icl_val_nll"] = train(icl, bank, val, args, dev, run, "icl", ctx=True)
-        icl.eval()
+        icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "icl", True)
         for mode in ("real", "none", "shuf_fb"):
             results[f"icl_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
-            print(f"ICL[{mode}] pass", results[f"icl_{mode}"]["pass"], "succ", results[f"icl_{mode}"]["succ"],
-                  "repeat", results[f"icl_{mode}"]["repeat"], flush=True)
+            show(f"icl_{mode}")
+        for spec in filter(None, args.icl_samples.split(",")):
+            mode, temp = spec.split(":")
+            samp.mode, samp.temp = mode, float(temp)
+            results[f"icl_real_{mode}{temp}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, sampler=samp)
+            show(f"icl_real_{mode}{temp}")
+        samp.mode, samp.temp = args.sample, args.temp
     es = results["expert"]["succ"][0]
     results["oracle_pass"] = [es * min(1.0, (k + 1) / K) for k in range(args.attempts)]
     results["guess_pass_ref"] = [es * (1 - (1 - 1 / K) ** (k + 1)) for k in range(args.attempts)]
