@@ -63,6 +63,7 @@ class Args:
     dropout: float = 0.0
     bc_onehot_only: bool = False  # BC sees obs[:61] + target one-hot only (no target pose / tcp->target)
     drop_qvel: bool = False  # zero joint velocities in the ICL student's input (copycat test)
+    chunk: int = 1  # GMM over H-step action chunks, executed open-loop (one mixture sample per chunk)
     arch: str = "flat"  # flat: GMMPolicy over the flat obs; obj: object-centric ObjPolicy
     ctx_path: str = "attn"  # attn: context tokens attended to; cat: flattened context concatenated to the obs input
     ckpt: str = "best"  # weights evaluated after training: best (lowest val NLL) | final
@@ -337,7 +338,10 @@ def train(model, bank, val, args, dev, run, tag, ctx):
         sel = ix[torch.randint(0, len(ix), (args.batch,), generator=gen, device=dev)]
         lid, cond, t = sel[:, 0], sel[:, 1], sel[:, 2]
         s = src["obs"][lid, cond, t].float()[:, :sdim]
-        a = src["act"][lid, cond, t]
+        H = args.chunk
+        last = src["alive"][lid, cond].sum(-1) - 1  # last alive step
+        tt = torch.minimum(t[:, None] + torch.arange(H, device=dev), last[:, None])  # pad past the end with the last action
+        a = src["act"][lid[:, None], cond[:, None], tt].reshape(len(t), -1)
         if not ctx:
             return s, a, None, None
         ids, fb = search_contexts(cond, gen)
@@ -416,7 +420,7 @@ def main():
     A = env.action_space.shape[-1]
     expert = load_expert(args.expert_checkpoint, A, dev)
 
-    ename = os.path.basename(os.path.dirname(args.expert_checkpoint))
+    ename = os.path.basename(os.path.dirname(args.expert_checkpoint)) + "-" + os.path.basename(args.expert_checkpoint)[:-3]
     cache = args.cache or str(LOG_ROOT / f"clutter_bank/{ename}-d{args.demos}-v{args.val_layouts}-ds{args.data_seed}.pt")
     if os.path.exists(cache):
         bank, val = torch.load(cache, map_location=dev)
@@ -468,8 +472,11 @@ def main():
                 if sdim == OBS_DIM:
                     s[:, LAY["target_pose"]] = tp
                     s[:, LAY["tcp_to_target"]] = tp[:, :3] - o[:, LAY["tcp_pose"]][:, :3]
-            logits, mu, _ = model(s, c if ctx else None, m if ctx else None)
-            return samp(logits, mu)
+            H = args.chunk
+            if t % H == 0:
+                logits, mu, _ = model(s, c if ctx else None, m if ctx else None)
+                f.buf = samp(logits, mu).reshape(len(s), H, A)
+            return f.buf[:, t % H]
         return f
 
     def fit(model, tag, ctx):
@@ -491,17 +498,17 @@ def main():
         BD = LAY["target_onehot"].stop if args.bc_onehot_only else OBS_DIM
         if args.arch == "obj":
             BD = LAY["target_onehot"].stop
-            bc = fit(ObjPolicy("bc", A, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
+            bc = fit(ObjPolicy("bc", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
         else:
-            bc = fit(GMMPolicy(BD, A, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
+            bc = fit(GMMPolicy(BD, A * args.chunk, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
         results["bc"] = eval_all(gmm_fn(bc, BD, False), args.attempts, sampler=samp)
         results["bc_guess"] = eval_all(gmm_fn(bc, BD, False, rand_cond=True), args.attempts, sampler=samp)
         show("bc"), show("bc_guess")
     if "icl" in methods:
         if args.arch == "obj":
-            icl = fit(ObjPolicy("icl", A, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "icl", True)
+            icl = fit(ObjPolicy("icl", A * args.chunk, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "icl", True)
         else:
-            icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
+            icl = fit(GMMPolicy(S_OBS, A * args.chunk, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
         for mode in ("real", "none", "shuf_fb"):
             results[f"icl_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
             show(f"icl_{mode}")
