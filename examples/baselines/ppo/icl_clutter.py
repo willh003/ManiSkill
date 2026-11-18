@@ -63,6 +63,7 @@ class Args:
     dropout: float = 0.0
     bc_onehot_only: bool = False  # BC sees obs[:61] + target one-hot only (no target pose / tcp->target)
     drop_qvel: bool = False  # zero joint velocities in the ICL student's input (copycat test)
+    arch: str = "flat"  # flat: GMMPolicy over the flat obs; obj: object-centric ObjPolicy
     ctx_path: str = "attn"  # attn: context tokens attended to; cat: flattened context concatenated to the obs input
     ckpt: str = "best"  # weights evaluated after training: best (lowest val NLL) | final
     load_dir: Optional[str] = None  # skip training; load <load_dir>/checkpoints/{bc,icl}[-best].pt
@@ -167,9 +168,10 @@ class GMMPolicy(nn.Module):
         self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
         self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, mix * (2 * A + 1)))
 
-    def set_norm(self, s, c=None):
+    def set_norm(self, s, c=None, m=None):
         self.s_mean.copy_(s.mean(0)), self.s_std.copy_(s.std(0).clamp_min(1e-3))
         if c is not None and (self.ctx or self.cat):
+            c = c[m]
             self.c_mean.copy_(c.mean(0)), self.c_std.copy_(c.std(0).clamp_min(1e-3))
             self.c_mean[2 * K:], self.c_std[2 * K:] = 0.0, 1.0  # binary flags as is
 
@@ -199,6 +201,69 @@ class GMMPolicy(nn.Module):
         logits, mu, ls = self(s, c, cmask)
         lp = (-0.5 * ((a[:, None] - mu) / ls.exp()) ** 2 - ls - 0.5 * math.log(2 * math.pi)).sum(-1)
         return -(torch.logsumexp(F.log_softmax(logits, -1) + lp, -1)).mean()
+
+
+def gmm_nll(logits, mu, ls, a):
+    lp = (-0.5 * ((a[:, None] - mu) / ls.exp()) ** 2 - ls - 0.5 * math.log(2 * math.pi)).sum(-1)
+    return -(torch.logsumexp(F.log_softmax(logits, -1) + lp, -1)).mean()
+
+
+class ObjPolicy(nn.Module):
+    """Object-centric GMM policy. Tokens: one proprio token (qpos, qvel, tcp pose) + one token per object
+    [pose 7, lift, grasped, tcp->obj 3, cond feats] + a learned object-id embedding. cond feats: BC (`mode="bc"`, obs incl.
+    target one-hot) -> is-target flag; ICL (`mode="icl"`) -> per context slot [lifted this object, feedback, valid, final xy 2].
+    The action GMM is read out from the proprio token."""
+
+    def __init__(self, mode, A, d, layers, heads, mix, dropout=0.0):
+        super().__init__()
+        self.mode, self.A, self.mix = mode, A, mix
+        self.obs_dim = LAY["target_onehot"].stop if mode == "bc" else S_OBS
+        self.ctx = mode == "icl"
+        self.fo = 12 + (1 if mode == "bc" else 5 * L_CTX)
+        self.register_buffer("p_mean", torch.zeros(25)), self.register_buffer("p_std", torch.ones(25))
+        self.register_buffer("o_mean", torch.zeros(self.fo)), self.register_buffer("o_std", torch.ones(self.fo))
+        self.p_proj = nn.Sequential(nn.Linear(25, d), nn.GELU(), nn.Linear(d, d))
+        self.o_proj = nn.Sequential(nn.Linear(self.fo, d), nn.GELU(), nn.Linear(d, d))
+        self.id_emb = nn.Parameter(torch.randn(K, d) * 0.02)
+        self.p_emb = nn.Parameter(torch.zeros(d))
+        layer = nn.TransformerEncoderLayer(d, heads, 4 * d, dropout=dropout, batch_first=True, norm_first=True, activation="gelu")
+        self.enc = nn.TransformerEncoder(layer, layers, enable_nested_tensor=False)
+        self.head = nn.Sequential(nn.LayerNorm(d), nn.Linear(d, mix * (2 * A + 1)))
+
+    def feats(self, s, c=None, cmask=None):
+        B = len(s)
+        prop = s[:, :25]
+        op = s[:, LAY["obj_pose"]].reshape(B, K, 7)
+        f = [op, s[:, LAY["obj_lift"]][..., None], s[:, LAY["obj_grasped"]][..., None], op[..., :3] - s[:, None, 18:21]]
+        if self.mode == "bc":
+            f.append(s[:, LAY["target_onehot"]][..., None])
+        else:
+            lifted = c[..., 2 * K:3 * K].transpose(1, 2)  # (B,K,L)
+            fb = c[..., -1][:, None].expand(B, K, L_CTX)
+            v = cmask.float()[:, None].expand(B, K, L_CTX)
+            xy = c[..., :2 * K].reshape(B, L_CTX, K, 2).transpose(1, 2)  # (B,K,L,2)
+            f.append(torch.cat([lifted[..., None], fb[..., None], v[..., None], xy], -1).reshape(B, K, 5 * L_CTX) * 1.0)
+        return prop, torch.cat(f, -1)
+
+    def set_norm(self, s, c=None, m=None):
+        prop, of = self.feats(s, c, m)
+        self.p_mean.copy_(prop.mean(0)), self.p_std.copy_(prop.std(0).clamp_min(1e-3))
+        of = of.reshape(-1, self.fo)
+        self.o_mean.copy_(of.mean(0)), self.o_std.copy_(of.std(0).clamp_min(1e-3))
+        flags = [12] if self.mode == "bc" else [12 + 5 * j + i for j in range(L_CTX) for i in range(3)]
+        self.o_mean[flags], self.o_std[flags] = 0.0, 1.0  # binary flags as is
+
+    def forward(self, s, c=None, cmask=None):
+        prop, of = self.feats(s, c, cmask)
+        p = self.p_proj((prop - self.p_mean) / self.p_std) + self.p_emb
+        o = self.o_proj(((of - self.o_mean) / self.o_std).clamp(-10, 10)) + self.id_emb
+        h = self.enc(torch.cat([p[:, None], o], 1))[:, 0]
+        out = self.head(h)
+        M, A = self.mix, self.A
+        return out[:, :M], out[:, M:M + M * A].reshape(-1, M, A), out[:, M + M * A:].reshape(-1, M, A).clamp(-5, 1)
+
+    def nll(self, s, a, c=None, cmask=None):
+        return gmm_nll(*self(s, c, cmask), a)
 
 
 class Sampler:
@@ -262,7 +327,7 @@ def train(model, bank, val, args, dev, run, tag, ctx):
     if ctx:
         ids, fb = search_contexts(idx[:, 1], g)
         c, m = build_ctx(tok, idx[:, 0], ids, fb)
-        model.set_norm(s_all, c[m])
+        model.set_norm(s_all, c, m)
     else:
         model.set_norm(s_all)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -424,12 +489,19 @@ def main():
 
     if "bc" in methods:
         BD = LAY["target_onehot"].stop if args.bc_onehot_only else OBS_DIM
-        bc = fit(GMMPolicy(BD, A, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
+        if args.arch == "obj":
+            BD = LAY["target_onehot"].stop
+            bc = fit(ObjPolicy("bc", A, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
+        else:
+            bc = fit(GMMPolicy(BD, A, False, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "bc", False)
         results["bc"] = eval_all(gmm_fn(bc, BD, False), args.attempts, sampler=samp)
         results["bc_guess"] = eval_all(gmm_fn(bc, BD, False, rand_cond=True), args.attempts, sampler=samp)
         show("bc"), show("bc_guess")
     if "icl" in methods:
-        icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
+        if args.arch == "obj":
+            icl = fit(ObjPolicy("icl", A, args.d, args.layers, args.heads, args.mix, args.dropout).to(dev), "icl", True)
+        else:
+            icl = fit(GMMPolicy(S_OBS, A, True, args.d, args.layers, args.heads, args.mix, args.dropout, args.ctx_path, args.drop_qvel).to(dev), "icl", True)
         for mode in ("real", "none", "shuf_fb"):
             results[f"icl_{mode}"] = eval_all(gmm_fn(icl, S_OBS, True), args.attempts, ctx_mode=mode, sampler=samp)
             show(f"icl_{mode}")
