@@ -27,12 +27,13 @@ def zrot(yaw):
 
 
 class MetaPeg:
-    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False, full_obs=False):
+    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False, full_obs=False, train_region="all"):
         env = gym.make("PegInsertionSideBias-v1", num_envs=num_envs, obs_mode="state", control_mode="pd_joint_delta_pos",
                        sim_backend="physx_cuda", reward_mode="normalized_dense", max_episode_steps=10 ** 6)
         env = FlattenActionSpaceWrapper(env) if isinstance(env.action_space, gym.spaces.Dict) else env
         self.venv = ManiSkillVectorEnv(env, num_envs, auto_reset=False, ignore_terminations=True, record_metrics=False)
         self.N, self.n_ep, self.split, self.same_init = num_envs, n_ep, split, same_init
+        self.train_region = train_region  # region of the split that training tasks are sampled from: "all" | "white" (ID); "black" is held out as OOD
         self.nxy, self.nyaw = fb_noise_xy, fb_noise_yaw
         self.hide_f = hide_f  # True: the actor obs does not contain the final peg pose f (only c = hole - f + noise); f must be remembered from the last frames
         self.dev = torch.device(device)
@@ -47,7 +48,7 @@ class MetaPeg:
     # ---- meta-episode control
     def reset(self, seed, goals=None, gen=None):
         """Start a meta-episode. goals (N,3) box poses, default sampled from the split ('all'). Returns (actor obs, critic obs)."""
-        self.goals = goals if goals is not None else checker_sample(self.N, "all", self.dev, gen, self.split)
+        self.goals = goals if goals is not None else checker_sample(self.N, self.train_region, self.dev, gen, self.split)
         self.seed, self.ep, self.t = seed, 0, 0
         self.f = torch.zeros(self.N, 7, device=self.dev)
         self.c = torch.zeros(self.N, 7, device=self.dev)

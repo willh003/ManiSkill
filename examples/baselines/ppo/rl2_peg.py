@@ -35,6 +35,7 @@ class Args:
     fb_noise_xy: float = 0.0
     fb_noise_yaw: float = 0.0
     split: str = "wide_corner"
+    train_region: str = "all"  # "all" | "white": train (and eval ID) on this region of --split; "white" also evals OOD on the complement ("black")
     same_init: bool = True
     hide_f: bool = False  # do not give the final peg pose f in the feedback (only c); the policy must remember it from the last frames
     full_obs: bool = False  # oracle baseline: actor sees the true hole (use --n-ep 1 --ep1-label true)
@@ -129,14 +130,18 @@ class Trainer:
         self.args = args
         self.dev = torch.device("cuda")
         torch.manual_seed(args.seed)
-        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs)
+        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs, train_region=args.train_region)
         self.expert = load_expert(args.expert_checkpoint, self.dev)
         self.N, self.T, self.A = args.num_envs, self.env.T, self.env.A
         self.actor = Actor(self.env.actor_dim, self.A, args.hidden, args.memoryless).to(self.dev)
         self.critic = Critic(self.env.critic_dim, args.hidden).to(self.dev)
         g = torch.Generator(device=self.dev).manual_seed(args.eval_seed)
-        eg = checker_sample(512, "all", self.dev, g, args.split)
+        eg = checker_sample(512, args.train_region, self.dev, g, args.split)
         self.eval_goals = eg.repeat(math.ceil(self.N / 512), 1)[: self.N]
+        self.ood_goals = None
+        if args.train_region != "all":
+            og = checker_sample(512, "black", self.dev, g, args.split)
+            self.ood_goals = og.repeat(math.ceil(self.N / 512), 1)[: self.N]
         self.gen = torch.Generator(device=self.dev).manual_seed(1000 + args.seed)
         self.seed_ctr = 10 ** 6 * args.seed
 
@@ -206,6 +211,11 @@ class Trainer:
             for k in range(self.env.n_ep):
                 d[f"{name}succ_ep{k + 1}"] = ss[:, k].mean().item()
             d[f"{name}pass@{self.env.n_ep}"] = ss.max(1).values.mean().item()
+        if self.ood_goals is not None and not ctrl:
+            so = self.run_episode("student", goals=self.ood_goals, seed=self.args.eval_seed)["succ"].float()[:512]
+            for k in range(self.env.n_ep):
+                d[f"ood_succ_ep{k + 1}"] = so[:, k].mean().item()
+            d[f"ood_pass@{self.env.n_ep}"] = so.max(1).values.mean().item()
         return d
 
     # ---- BC
@@ -343,6 +353,8 @@ def main(args):
     tr.ppo(rd, start, opt_state)
     res = dict(ref=ref, final=tr.eval(), controls={c: tr.eval(c) for c in ("shuf", "zero", "hreset")})
     res["succ_matrix"] = tr.run_episode("student", goals=tr.eval_goals, seed=args.eval_seed)["succ"][:512].int().tolist()  # (512 tasks, n_ep)
+    if tr.ood_goals is not None:
+        res["ood_succ_matrix"] = tr.run_episode("student", goals=tr.ood_goals, seed=args.eval_seed)["succ"][:512].int().tolist()
     rd.save_json("results.json", res)
     print(json.dumps(res, indent=1))
     print("ALLDONE", flush=True)
