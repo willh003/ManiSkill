@@ -36,6 +36,8 @@ class Args:
     fb_noise_yaw: float = 0.0
     split: str = "wide_corner"
     train_region: str = "all"  # "all" | "white": train (and eval ID) on this region of --split; "white" also evals OOD on the complement ("black")
+    fixed_tasks: int = 0  # >0: train/eval on M fully fixed tasks (see MetaPeg), same tasks as ppo_tasks.py --fixed --n_tasks M
+    pool_seed: int = 0
     same_init: bool = True
     hide_f: bool = False  # do not give the final peg pose f in the feedback (only c); the policy must remember it from the last frames
     full_obs: bool = False  # oracle baseline: actor sees the true hole (use --n-ep 1 --ep1-label true)
@@ -130,7 +132,7 @@ class Trainer:
         self.args = args
         self.dev = torch.device("cuda")
         torch.manual_seed(args.seed)
-        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs, train_region=args.train_region)
+        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs, train_region=args.train_region, fixed_tasks=args.fixed_tasks, pool_seed=args.pool_seed)
         self.expert = load_expert(args.expert_checkpoint, self.dev)
         self.N, self.T, self.A = args.num_envs, self.env.T, self.env.A
         self.actor = Actor(self.env.actor_dim, self.A, args.hidden, args.memoryless).to(self.dev)
@@ -138,6 +140,9 @@ class Trainer:
         g = torch.Generator(device=self.dev).manual_seed(args.eval_seed)
         eg = checker_sample(512, args.train_region, self.dev, g, args.split)
         self.eval_goals = eg.repeat(math.ceil(self.N / 512), 1)[: self.N]
+        if self.env.fixed_pool is not None:
+            eg = self.env.fixed_pool.to(self.dev)[torch.arange(512, device=self.dev) % len(self.env.fixed_pool)]
+            self.eval_goals = eg.repeat(math.ceil(self.N / 512), 1)[: self.N]
         self.ood_goals = None
         if args.train_region != "all":
             og = checker_sample(512, "black", self.dev, g, args.split)
