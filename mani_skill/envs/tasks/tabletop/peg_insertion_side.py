@@ -106,18 +106,23 @@ class PegInsertionSideEnv(BaseEnv):
     def _load_agent(self, options: dict):
         super()._load_agent(options, sapien.Pose(p=[-0.615, 0, 0]))
 
+    def _sample_peg_dims(self):
+        """Per-env peg half-length, radius and hole-centre offsets (numpy). Overridable (e.g. fixed tasks)."""
+        lengths = self._batched_episode_rng.uniform(0.085, 0.125)
+        radii = self._batched_episode_rng.uniform(0.015, 0.025)
+        centers = (
+            0.5
+            * (lengths - radii)[:, None]
+            * self._batched_episode_rng.uniform(-1, 1, size=(2,))
+        )
+        return lengths, radii, centers
+
     def _load_scene(self, options: dict):
         with torch.device(self.device):
             self.table_scene = TableSceneBuilder(self)
             self.table_scene.build()
 
-            lengths = self._batched_episode_rng.uniform(0.085, 0.125)
-            radii = self._batched_episode_rng.uniform(0.015, 0.025)
-            centers = (
-                0.5
-                * (lengths - radii)[:, None]
-                * self._batched_episode_rng.uniform(-1, 1, size=(2,))
-            )
+            lengths, radii, centers = self._sample_peg_dims()
 
             # save some useful values for use later
             self.peg_half_sizes = common.to_tensor(np.vstack([lengths, radii, radii])).T

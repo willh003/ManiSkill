@@ -128,6 +128,7 @@ class Args:
     split: str = "wide_corner"
     """icl_tasks.SPLITS entry giving the task ranges and train/test regions"""
     pool_seed: int = 0
+    fixed: bool = False  # fully fixed tasks: env i always runs task i % n_tasks (hole pose, peg size, peg start pose, robot noise all frozen)
     out_dir: str = ""
     """output dir (default runs/<name>)"""
     n_heldout: int = 128
@@ -362,13 +363,20 @@ if __name__ == "__main__":
     ekw = dict(obs_mode="state", sim_backend="physx_cuda", append_offset=False)
     if args.control_mode is not None:
         ekw["control_mode"] = args.control_mode
-    env_kwargs["task_pool"] = pool
+    table = None
+    if args.fixed:
+        from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import PegInsertionSideBiasEnv
+        assert pool is not None
+        table = PegInsertionSideBiasEnv.make_fixed_table(pool, args.pool_seed)
+        env_kwargs["fixed_tasks"] = table
+    else:
+        env_kwargs["task_pool"] = pool
     env_kwargs["append_offset"] = False
     envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, human_render_camera_configs=dict(shader_pack="default"), **env_kwargs)
     set_envs = {}
     for k, g in eval_sets.items():
-        e = gym.make(args.env_id, num_envs=len(g), reconfiguration_freq=None, **ekw)
+        e = gym.make(args.env_id, num_envs=len(g), reconfiguration_freq=None, **ekw, **(dict(fixed_tasks=table) if (table is not None and k == "train") else {}))
         if isinstance(e.action_space, gym.spaces.Dict):
             e = FlattenActionSpaceWrapper(e)
         set_envs[k] = ManiSkillVectorEnv(e, len(g), ignore_terminations=True, record_metrics=True)

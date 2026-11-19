@@ -29,16 +29,55 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
     bias_xy = float(os.environ.get("PEG_OBS_BIAS_XY", 0.02))
     bias_yaw = float(os.environ.get("PEG_OBS_BIAS_YAW", 0.1))
 
-    def __init__(self, *args, task_pool=None, append_offset=True, **kwargs):
+    @staticmethod
+    def make_fixed_table(box_poses, seed=0):
+        """Fully specified tasks for `fixed_tasks`: row k = (hole pose from box_poses[k], peg dims, hole-centre offset, peg start pose, robot qpos noise).
+        Everything is drawn once from the same distributions as PegInsertionSide-v1 and then frozen."""
+        M = len(box_poses)
+        rs = np.random.RandomState(1234 + seed)
+        T = dict(box=box_poses.detach().cpu().float())
+        T["len"] = torch.tensor(rs.uniform(0.085, 0.125, M), dtype=torch.float32)
+        T["rad"] = torch.tensor(rs.uniform(0.015, 0.025, M), dtype=torch.float32)
+        T["ctr"] = 0.5 * (T["len"] - T["rad"])[:, None] * torch.tensor(rs.uniform(-1, 1, (M, 2)), dtype=torch.float32)
+        T["peg_xy"] = torch.tensor(rs.uniform([-0.1, -0.3], [0.1, 0.0], (M, 2)), dtype=torch.float32)
+        T["peg_yaw"] = torch.tensor(rs.uniform(np.pi / 2 - np.pi / 3, np.pi / 2 + np.pi / 3, M), dtype=torch.float32)
+        T["qnoise"] = torch.tensor(rs.normal(0, 0.02, (M, 9)), dtype=torch.float32)
+        return T
+
+    def __init__(self, *args, task_pool=None, append_offset=True, fixed_tasks=None, **kwargs):
+        # fixed_tasks: table from make_fixed_table. Env i always runs task i % M exactly (hole, peg dims, peg start pose, robot noise): no randomness across resets.
+        self.fixed_tasks = fixed_tasks
         # task_pool: (M, 3) box poses (x, y, yaw); when given and reset has no `box_pose` option, every (partial) reset draws a task uniformly from it.
         # append_offset=False: the state obs is PegInsertionSide-v1's 43-dim clean obs (no hole_offset).
         self.task_pool = task_pool
         self.append_offset = append_offset
         super().__init__(*args, **kwargs)
 
+    def _sample_peg_dims(self):
+        if self.fixed_tasks is None:
+            return super()._sample_peg_dims()
+        k = np.arange(self.num_envs) % len(self.fixed_tasks["len"])
+        return self.fixed_tasks["len"].numpy()[k], self.fixed_tasks["rad"].numpy()[k], self.fixed_tasks["ctr"].numpy()[k]
+
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         super()._initialize_episode(env_idx, options)
         options = options or {}
+        if self.fixed_tasks is not None:
+            T = {k: v.to(self.device) for k, v in self.fixed_tasks.items()}
+            kk = env_idx.to(self.device) % len(T["len"])
+            b = len(env_idx)
+            pos = torch.zeros(b, 3, device=self.device)
+            pos[:, :2] = T["peg_xy"][kk]
+            pos[:, 2] = self.peg_half_sizes[env_idx, 2]
+            yaw = T["peg_yaw"][kk]
+            quat = torch.stack([torch.cos(yaw / 2), torch.zeros_like(yaw), torch.zeros_like(yaw), torch.sin(yaw / 2)], dim=1)
+            self.peg.set_pose(Pose.create_from_pq(pos, quat))
+            q0 = torch.tensor([0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04], device=self.device)
+            qpos = q0 + T["qnoise"][kk]
+            qpos[:, -2:] = 0.04
+            self.agent.robot.set_qpos(qpos)
+            if options.get("box_pose") is None:
+                options = dict(options, box_pose=T["box"][kk])
         if not hasattr(self, "hole_offset"):
             self.hole_offset = torch.zeros(self.num_envs, 3, device=self.device)
         offset = options.get("offset")
