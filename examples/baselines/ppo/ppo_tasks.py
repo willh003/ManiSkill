@@ -354,7 +354,7 @@ if __name__ == "__main__":
     reg = args.region
     eval_sets = {}
     if pool is not None:
-        eval_sets["train"] = pool if len(pool) >= 128 else pool.repeat((127 // len(pool)) + 1, 1)[:128]
+        eval_sets["train"] = pool[:512] if len(pool) >= 128 else pool.repeat((127 // len(pool)) + 1, 1)[:128]
         eval_sets["heldout"] = checker_sample(args.n_heldout, reg, device, ge, args.split)
     eval_sets["fullspace"] = checker_sample(256, "all", device, ge, args.split)
     if reg != "all":
