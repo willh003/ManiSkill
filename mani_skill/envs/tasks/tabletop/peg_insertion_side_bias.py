@@ -29,6 +29,13 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
     bias_xy = float(os.environ.get("PEG_OBS_BIAS_XY", 0.02))
     bias_yaw = float(os.environ.get("PEG_OBS_BIAS_YAW", 0.1))
 
+    def __init__(self, *args, task_pool=None, append_offset=True, **kwargs):
+        # task_pool: (M, 3) box poses (x, y, yaw); when given and reset has no `box_pose` option, every (partial) reset draws a task uniformly from it.
+        # append_offset=False: the state obs is PegInsertionSide-v1's 43-dim clean obs (no hole_offset).
+        self.task_pool = task_pool
+        self.append_offset = append_offset
+        super().__init__(*args, **kwargs)
+
     def _initialize_episode(self, env_idx: torch.Tensor, options: dict):
         super()._initialize_episode(env_idx, options)
         options = options or {}
@@ -45,6 +52,9 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
         self.hole_offset[env_idx] = offset
 
         box_pose = options.get("box_pose")
+        if box_pose is None and self.task_pool is not None:
+            pool = self.task_pool.to(self.device)
+            box_pose = pool[torch.randint(len(pool), (len(env_idx),), device=self.device)]
         if box_pose is not None:
             box_pose = box_pose.to(self.device)
             box_pose = box_pose[env_idx] if len(box_pose) == self.num_envs else box_pose
@@ -57,7 +67,7 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
 
     def _get_obs_extra(self, info: dict):
         obs = super()._get_obs_extra(info)
-        if self.obs_mode_struct.use_state:
+        if self.obs_mode_struct.use_state and self.append_offset:
             obs["hole_offset"] = self.hole_offset
         return obs
 
