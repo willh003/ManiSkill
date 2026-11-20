@@ -52,7 +52,7 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
         return T
 
     def __init__(self, *args, task_pool=None, append_offset=True, fixed_tasks=None, near_hole_prob=0.0, near_hole_max_depth=0.1, **kwargs):
-        # near_hole_prob: OmniReset-style reset bias: with this probability a (re)set starts with the peg already in the hole, pulled back by U(0, near_hole_max_depth) m
+        # near_hole_prob: OmniReset-style reset bias: with this probability a (re)set starts with the peg already in the hole, pulled back by U(0.03, near_hole_max_depth) m
         # along the hole axis from the fully inserted pose (robot stays at its default pose, so it must still grasp and push). Training envs only.
         self.near_hole_prob = near_hole_prob
         self.near_hole_max_depth = near_hole_max_depth
@@ -119,7 +119,7 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
         if self.near_hole_prob > 0:
             b = len(env_idx)
             m = torch.rand(b, device=self.device) < self.near_hole_prob
-            depth = torch.rand(b, device=self.device) * self.near_hole_max_depth
+            depth = 0.03 + torch.rand(b, device=self.device) * (self.near_hole_max_depth - 0.03)
             back = Pose.create_from_pq(p=torch.stack([-depth, torch.zeros_like(depth), torch.zeros_like(depth)], dim=1))
             tgt = self.goal_pose[env_idx] * back
             cur = self.peg.pose[env_idx]
