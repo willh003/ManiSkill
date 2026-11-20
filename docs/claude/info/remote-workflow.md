@@ -23,7 +23,7 @@ Notes
 - Only manual step: if scripts print "cannot reach klone non-interactively", the user must run `! ssh klone` (Duo) to refresh the socket.
 - Never run compute on login nodes; only sbatch/squeue/sacct/scancel/tail go over ssh.
 
-## Tillicum (UW Hyak, H200) — `CLUSTER=tillicum`
+## Tillicum (UW Hyak, H200) — `CLUSTER=tillicum` (full note: tillicum.md)
 Same scripts, different profile: `CLUSTER=tillicum scripts/cluster/{push,submit,status,pull,cancel}.sh ...` (default is klone).
 `submit_cmd.sh` also works: `CLUSTER=tillicum TIME=8:00:00 scripts/cluster/submit_cmd.sh <name> "<cmd>"` (one job, no ckpt fallback).
 - ssh alias `tillicum` (tillicum.hyak.uw.edu, user wph52, control socket; first login needs `! ssh tillicum` + Duo).

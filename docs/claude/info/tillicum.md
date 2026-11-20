@@ -34,3 +34,5 @@ For rendering use klone or try the full `gpu-h200` partition (untested).
 ## Gotchas seen
 - 2048 envs + cudagraphs on an 18GB slice: watch for OOM in the `.log`; reduce `--num_envs` if so.
 - Python stdout is block-buffered: use `python -u`.
+- Checkpoints/data under `logs/` are never pushed: copy inputs by hand (e.g. rl2_peg needs `logs/runs/peg-expert-r1/ckpt_3576.pt`; copied via
+  `ssh klone cat ... | ssh tillicum 'cat > ...'`). Pull results with `CLUSTER=tillicum scripts/cluster/pull.sh`.
