@@ -38,6 +38,7 @@ class Args:
     train_region: str = "all"  # "all" | "white": train (and eval ID) on this region of --split; "white" also evals OOD on the complement ("black")
     fixed_tasks: int = 0  # >0: train/eval on M fully fixed tasks (see MetaPeg), same tasks as ppo_tasks.py --fixed --n_tasks M
     pool_seed: int = 0
+    shared_peg: bool = False  # with --fixed-tasks: one shared peg (size+start pose), only the hole pose differs (random each meta-episode among M); robot noise random
     same_init: bool = True
     hide_f: bool = False  # do not give the final peg pose f in the feedback (only c); the policy must remember it from the last frames
     full_obs: bool = False  # oracle baseline: actor sees the true hole (use --n-ep 1 --ep1-label true)
@@ -132,7 +133,7 @@ class Trainer:
         self.args = args
         self.dev = torch.device("cuda")
         torch.manual_seed(args.seed)
-        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs, train_region=args.train_region, fixed_tasks=args.fixed_tasks, pool_seed=args.pool_seed)
+        self.env = MetaPeg(args.num_envs, args.n_ep, args.fb_noise_xy, args.fb_noise_yaw, args.split, args.same_init, hide_f=args.hide_f, full_obs=args.full_obs, train_region=args.train_region, fixed_tasks=args.fixed_tasks, pool_seed=args.pool_seed, shared_peg=args.shared_peg)
         self.expert = load_expert(args.expert_checkpoint, self.dev)
         self.N, self.T, self.A = args.num_envs, self.env.T, self.env.A
         self.actor = Actor(self.env.actor_dim, self.A, args.hidden, args.memoryless).to(self.dev)

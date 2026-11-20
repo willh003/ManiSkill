@@ -27,14 +27,15 @@ def zrot(yaw):
 
 
 class MetaPeg:
-    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False, full_obs=False, train_region="all", fixed_tasks=0, pool_seed=0):
+    def __init__(self, num_envs, n_ep=2, fb_noise_xy=0.0, fb_noise_yaw=0.0, split="wide_corner", same_init=True, device="cuda", hide_f=False, full_obs=False, train_region="all", fixed_tasks=0, pool_seed=0, shared_peg=False):
         kw = {}
         self.fixed_pool = None
+        self.shared_peg = shared_peg
         if fixed_tasks > 0:  # fully fixed tasks (hole, peg dims, peg start, robot noise); env i runs task i % M. Same tasks as ppo_tasks.py --fixed --n_tasks M
             from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import PegInsertionSideBiasEnv
             gp = torch.Generator(device=device).manual_seed(10_000 + pool_seed)
             self.fixed_pool = checker_sample(fixed_tasks, "all", torch.device(device), gp, split)
-            kw["fixed_tasks"] = PegInsertionSideBiasEnv.make_fixed_table(self.fixed_pool, pool_seed)
+            kw["fixed_tasks"] = PegInsertionSideBiasEnv.make_fixed_table(self.fixed_pool, pool_seed, shared_peg)
         env = gym.make("PegInsertionSideBias-v1", num_envs=num_envs, obs_mode="state", control_mode="pd_joint_delta_pos",
                        sim_backend="physx_cuda", reward_mode="normalized_dense", max_episode_steps=10 ** 6, **kw)
         env = FlattenActionSpaceWrapper(env) if isinstance(env.action_space, gym.spaces.Dict) else env
@@ -56,7 +57,9 @@ class MetaPeg:
     def reset(self, seed, goals=None, gen=None):
         """Start a meta-episode. goals (N,3) box poses, default sampled from the split ('all'). Returns (actor obs, critic obs)."""
         if self.fixed_pool is not None:
-            goals = self.fixed_pool.to(self.dev)[torch.arange(self.N, device=self.dev) % len(self.fixed_pool)]
+            M = len(self.fixed_pool)
+            rows = torch.randint(M, (self.N,), device=self.dev, generator=gen) if self.shared_peg else torch.arange(self.N, device=self.dev) % M
+            goals = self.fixed_pool.to(self.dev)[rows]
         self.goals = goals if goals is not None else checker_sample(self.N, self.train_region, self.dev, gen, self.split)
         self.seed, self.ep, self.t = seed, 0, 0
         self.f = torch.zeros(self.N, 7, device=self.dev)

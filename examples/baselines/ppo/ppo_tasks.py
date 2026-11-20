@@ -128,6 +128,7 @@ class Args:
     split: str = "wide_corner"
     """icl_tasks.SPLITS entry giving the task ranges and train/test regions"""
     pool_seed: int = 0
+    shared_peg: bool = False  # with --fixed: all tasks share one peg (size + start pose); only the hole pose (n_tasks choices) differs; robot noise random
     fixed: bool = False  # fully fixed tasks: env i always runs task i % n_tasks (hole pose, peg size, peg start pose, robot noise all frozen)
     out_dir: str = ""
     """output dir (default runs/<name>)"""
@@ -367,7 +368,7 @@ if __name__ == "__main__":
     if args.fixed:
         from mani_skill.envs.tasks.tabletop.peg_insertion_side_bias import PegInsertionSideBiasEnv
         assert pool is not None
-        table = PegInsertionSideBiasEnv.make_fixed_table(pool, args.pool_seed)
+        table = PegInsertionSideBiasEnv.make_fixed_table(pool, args.pool_seed, args.shared_peg)
         env_kwargs["fixed_tasks"] = table
     else:
         env_kwargs["task_pool"] = pool

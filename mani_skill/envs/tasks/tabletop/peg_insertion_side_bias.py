@@ -30,7 +30,7 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
     bias_yaw = float(os.environ.get("PEG_OBS_BIAS_YAW", 0.1))
 
     @staticmethod
-    def make_fixed_table(box_poses, seed=0):
+    def make_fixed_table(box_poses, seed=0, shared_peg=False):
         """Fully specified tasks for `fixed_tasks`: row k = (hole pose from box_poses[k], peg dims, hole-centre offset, peg start pose, robot qpos noise).
         Everything is drawn once from the same distributions as PegInsertionSide-v1 and then frozen."""
         M = len(box_poses)
@@ -42,6 +42,13 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
         T["peg_xy"] = torch.tensor(rs.uniform([-0.1, -0.3], [0.1, 0.0], (M, 2)), dtype=torch.float32)
         T["peg_yaw"] = torch.tensor(rs.uniform(np.pi / 2 - np.pi / 3, np.pi / 2 + np.pi / 3, M), dtype=torch.float32)
         T["qnoise"] = torch.tensor(rs.normal(0, 0.02, (M, 9)), dtype=torch.float32)
+        if shared_peg:
+            # one peg (size + start pose) shared by all tasks, robot start noise stays random (resampled each reset): tasks differ only in the hole pose,
+            # which is picked uniformly at random from box_poses at every reset -> the task cannot be identified from the initial observation
+            for k in ("len", "rad", "ctr", "peg_xy", "peg_yaw"):
+                T[k] = T[k][:1].expand(M, *T[k].shape[1:]).clone()
+            del T["qnoise"]
+            T["shared"] = torch.ones(1)
         return T
 
     def __init__(self, *args, task_pool=None, append_offset=True, fixed_tasks=None, **kwargs):
@@ -72,12 +79,14 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
             yaw = T["peg_yaw"][kk]
             quat = torch.stack([torch.cos(yaw / 2), torch.zeros_like(yaw), torch.zeros_like(yaw), torch.sin(yaw / 2)], dim=1)
             self.peg.set_pose(Pose.create_from_pq(pos, quat))
-            q0 = torch.tensor([0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04], device=self.device)
-            qpos = q0 + T["qnoise"][kk]
-            qpos[:, -2:] = 0.04
-            self.agent.robot.set_qpos(qpos)
+            if "qnoise" in T:
+                q0 = torch.tensor([0.0, np.pi / 8, 0, -np.pi * 5 / 8, 0, np.pi * 3 / 4, -np.pi / 4, 0.04, 0.04], device=self.device)
+                qpos = q0 + T["qnoise"][kk]
+                qpos[:, -2:] = 0.04
+                self.agent.robot.set_qpos(qpos)
             if options.get("box_pose") is None:
-                options = dict(options, box_pose=T["box"][kk])
+                rows = torch.randint(len(T["box"]), (b,), device=self.device) if "shared" in T else kk
+                options = dict(options, box_pose=T["box"][rows])
         if not hasattr(self, "hole_offset"):
             self.hole_offset = torch.zeros(self.num_envs, 3, device=self.device)
         offset = options.get("offset")
