@@ -4,6 +4,12 @@
 # Output: logs/slurm/<job name>.log on klone.
 source "$(dirname "$0")/config.sh"
 "$(dirname "$0")/push.sh" >/dev/null || exit $?
+if [ "$CLUSTER" = tillicum ]; then  # 1/7 H200 MIG slice, no rendering (state obs only); see remote-workflow.md
+  n=$1; b=$(printf '%s' "$2" | base64 -w0); ex="--export=ALL,CMD_B64=$b"
+  [ -n "$TIME" ] && ex+=" --time=$TIME"
+  ssh "$REMOTE_HOST" "cd $REMOTE_DIR && mkdir -p logs/slurm && sbatch --parsable -J $n $ex $SBATCH_EXTRA examples/baselines/ppo/slurm/cmd_tillicum.sbatch"
+  exit $?
+fi
 SB=examples/baselines/ppo/slurm/cmd.sbatch
 n=$1; b=$(printf '%s' "$2" | base64 -w0); ex="--export=ALL,CMD_B64=$b"
 [ -n "$TIME" ] && ex+=" --time=$TIME"

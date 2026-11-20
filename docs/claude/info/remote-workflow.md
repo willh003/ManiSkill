@@ -22,3 +22,17 @@ Notes
 - Sbatch `--output` hardcodes the remote path (`#SBATCH` lines can't expand variables).
 - Only manual step: if scripts print "cannot reach klone non-interactively", the user must run `! ssh klone` (Duo) to refresh the socket.
 - Never run compute on login nodes; only sbatch/squeue/sacct/scancel/tail go over ssh.
+
+## Tillicum (UW Hyak, H200) — `CLUSTER=tillicum`
+Same scripts, different profile: `CLUSTER=tillicum scripts/cluster/{push,submit,status,pull,cancel}.sh ...` (default is klone).
+`submit_cmd.sh` also works: `CLUSTER=tillicum TIME=8:00:00 scripts/cluster/submit_cmd.sh <name> "<cmd>"` (one job, no ckpt fallback).
+- ssh alias `tillicum` (tillicum.hyak.uw.edu, user wph52, control socket; first login needs `! ssh tillicum` + Duo).
+- Repo: `/gpfs/projects/weirdlab/will/ManiSkill`; venv `/gpfs/projects/weirdlab/will/venvs/maniskill` (py3.11, torch 2.6.0+cu124, editable mani_skill).
+- Account `weirdlab`, partition `gpu-h200-mig` (g024, 56 x `h200_1g.18gb` slices; **max 2 CPUs per GPU**, 30G/CPU default mem).
+  Full `gpu-h200` partition exists too (not set up here).
+- **No rendering on MIG**: NVIDIA Vulkan is unsupported on MIG slices (`ErrorIncompatibleDriver`), and sapien still needs *a* Vulkan device
+  to build materials. Workaround (set in `cmd_tillicum.sbatch`): `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json`
+  (lavapipe, CPU) + `MANISKILL_RENDER_BACKEND=none` (env override in `sapien_env.py`). State-obs GPU sim works; camera/rgb obs does not.
+  Verified with `scripts/cluster/smoke_tillicum.sbatch` (tries every ICD/backend combo).
+- Compute nodes reach the internet through a proxy; sapien downloads the PhysX GPU lib to `~/.sapien` on first use (done).
+- Never use `find /` or heavy scans in jobs/login: GPFS is slow.

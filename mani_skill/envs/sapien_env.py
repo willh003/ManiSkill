@@ -234,6 +234,8 @@ class BaseEnv(gym.Env):
                 sim_backend = "physx_cuda"
             else:
                 sim_backend = "physx_cpu"
+        # Env override, e.g. MANISKILL_RENDER_BACKEND=none on nodes without Vulkan (Tillicum MIG slices).
+        render_backend = os.environ.get("MANISKILL_RENDER_BACKEND", render_backend)
         self.backend = parse_sim_and_render_backend(sim_backend, render_backend)
         # determine the sim and render devices
         self.device = self.backend.device

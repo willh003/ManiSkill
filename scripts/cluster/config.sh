@@ -1,6 +1,15 @@
 # Shared settings for the local <-> klone workflow. Sourced by the other scripts.
-REMOTE_HOST=${REMOTE_HOST:-klone}
-REMOTE_DIR=${REMOTE_DIR:-/mmfs1/gscratch/weirdlab/will/ManiSkill}
+# CLUSTER=klone (default) | tillicum  (e.g. `CLUSTER=tillicum scripts/cluster/submit.sh <sbatch>`)
+CLUSTER=${CLUSTER:-klone}
+case $CLUSTER in
+  klone)
+    REMOTE_HOST=${REMOTE_HOST:-klone}
+    REMOTE_DIR=${REMOTE_DIR:-/mmfs1/gscratch/weirdlab/will/ManiSkill} ;;
+  tillicum)
+    REMOTE_HOST=${REMOTE_HOST:-tillicum}
+    REMOTE_DIR=${REMOTE_DIR:-/gpfs/projects/weirdlab/will/ManiSkill} ;;
+  *) echo "unknown CLUSTER=$CLUSTER" >&2; exit 1 ;;
+esac
 LOCAL_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 
 # Never pushed (and never deleted on the remote): results and local-only junk.
