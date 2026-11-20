@@ -148,6 +148,10 @@ class Trainer:
         if args.train_region != "all":
             og = checker_sample(512, "black", self.dev, g, args.split)
             self.ood_goals = og.repeat(math.ceil(self.N / 512), 1)[: self.N]
+        self.held_goals = None
+        if args.fixed_tasks > 0:  # held-out holes: fresh poses from the same distribution; first 128 = ppo_tasks.py's "heldout" eval set (generator seed 777)
+            hg = checker_sample(512, "all", self.dev, torch.Generator(device=self.dev).manual_seed(777), args.split)
+            self.held_goals = hg.repeat(math.ceil(self.N / 512), 1)[: self.N]
         self.gen = torch.Generator(device=self.dev).manual_seed(1000 + args.seed)
         self.seed_ctr = 10 ** 6 * args.seed
 
@@ -170,10 +174,10 @@ class Trainer:
 
     # ---- rollouts
     @torch.no_grad()
-    def run_episode(self, policy="student", beta=0.0, goals=None, seed=None, stochastic=False, ctrl="", record=False):
+    def run_episode(self, policy="student", beta=0.0, goals=None, seed=None, stochastic=False, ctrl="", record=False, held=False):
         """One meta-episode. policy: student | oracle. beta: per-env prob of the oracle (DAgger mix). Returns dict."""
         seed = self.next_seed() if seed is None else seed
-        a_obs, c_obs = self.env.reset(seed, goals, self.gen)
+        a_obs, c_obs = self.env.reset(seed, goals, self.gen, held=held)
         use_or = torch.rand(self.N, device=self.dev, generator=self.gen) < beta
         h = None
         rec = dict(a=[], c=[], act=[], lab=[], logp=[], val=[], rew=[], mean=[])
@@ -222,6 +226,11 @@ class Trainer:
             for k in range(self.env.n_ep):
                 d[f"ood_succ_ep{k + 1}"] = so[:, k].mean().item()
             d[f"ood_pass@{self.env.n_ep}"] = so.max(1).values.mean().item()
+        if self.held_goals is not None and not ctrl:
+            sh = self.run_episode("student", goals=self.held_goals, seed=self.args.eval_seed, held=True)["succ"].float()[:512]
+            for k in range(self.env.n_ep):
+                d[f"held_succ_ep{k + 1}"] = sh[:, k].mean().item()
+            d[f"held_pass@{self.env.n_ep}"] = sh.max(1).values.mean().item()
         return d
 
     # ---- BC

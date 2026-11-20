@@ -44,9 +44,16 @@ class PegInsertionSideBiasEnv(PegInsertionSideEnv):
         T["qnoise"] = torch.tensor(rs.normal(0, 0.02, (M, 9)), dtype=torch.float32)
         if shared_peg:
             # one peg (size + start pose) shared by all tasks, robot start noise stays random (resampled each reset): tasks differ only in the hole pose,
-            # which is picked uniformly at random from box_poses at every reset -> the task cannot be identified from the initial observation
-            for k in ("len", "rad", "ctr", "peg_xy", "peg_yaw"):
-                T[k] = T[k][:1].expand(M, *T[k].shape[1:]).clone()
+            # which is picked uniformly at random from box_poses at every reset -> the task cannot be identified from the initial observation.
+            # The shared peg is drawn as the first of a fixed 4-task draw, so it is identical for every M (and equals the M=4 peg).
+            R = np.random.RandomState(1234 + seed)
+            ln = torch.tensor(R.uniform(0.085, 0.125, 4), dtype=torch.float32)
+            rd = torch.tensor(R.uniform(0.015, 0.025, 4), dtype=torch.float32)
+            ct = 0.5 * (ln - rd)[:, None] * torch.tensor(R.uniform(-1, 1, (4, 2)), dtype=torch.float32)
+            pxy = torch.tensor(R.uniform([-0.1, -0.3], [0.1, 0.0], (4, 2)), dtype=torch.float32)
+            pyaw = torch.tensor(R.uniform(np.pi / 2 - np.pi / 3, np.pi / 2 + np.pi / 3, 4), dtype=torch.float32)
+            for k, v in (("len", ln), ("rad", rd), ("ctr", ct), ("peg_xy", pxy), ("peg_yaw", pyaw)):
+                T[k] = v[:1].expand(M, *v.shape[1:]).clone()
             del T["qnoise"]
             T["shared"] = torch.ones(1)
         return T

@@ -54,9 +54,9 @@ class MetaPeg:
         self.actor_dim = self.critic_dim if full_obs else S_DIM + n_ep + 1 + 15
 
     # ---- meta-episode control
-    def reset(self, seed, goals=None, gen=None):
+    def reset(self, seed, goals=None, gen=None, held=False):
         """Start a meta-episode. goals (N,3) box poses, default sampled from the split ('all'). Returns (actor obs, critic obs)."""
-        if self.fixed_pool is not None:
+        if self.fixed_pool is not None and not held:  # held=True: use the given (held-out) goals instead of the fixed pool
             M = len(self.fixed_pool)
             rows = torch.randint(M, (self.N,), device=self.dev, generator=gen) if self.shared_peg else torch.arange(self.N, device=self.dev) % M
             goals = self.fixed_pool.to(self.dev)[rows]
