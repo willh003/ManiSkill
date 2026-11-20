@@ -21,6 +21,7 @@ running/queued unless you cancel it (duplicate runs write to separate clusters' 
 - Slurm: account `weirdlab`, partition `gpu-h200-mig` (node g024, 56 slices `h200_1g.18gb` = 1/7 H200, 18GB). `--gres=gpu:1`;
   **max 2 CPUs per GPU** (sbatch rejects more); DefMemPerCPU 30G. Partition `gpu-h200` (full H200s, 23 nodes) exists, unused so far.
 - Default `/gpfs` is slow for scans: never `find /` (a probe job hung on it until time limit).
+- Max 34G mem per GPU slice (sbatch rejects more); long runs with 30G were OOM-killed (~2.6h).
 - Only cancel specific job ids (`scancel <id>`); don't `scancel -u`.
 
 ## Rendering is impossible on MIG slices
