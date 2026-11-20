@@ -119,6 +119,10 @@ class Args:
     reward_scale: float = 1.0
     """Scale the reward by this factor"""
     finite_horizon_gae: bool = False
+    critic_warmup_iters: int = 0
+    """warm start from --checkpoint: for the first N iterations the actor lr is 0 (only the critic learns), so garbage advantages cannot destroy the pretrained policy"""
+    actor_lr: Optional[float] = None
+    """actor learning rate (default: --learning_rate); the critic always uses --learning_rate"""
 
     # fixed / region-restricted training tasks (PegInsertionSideBias-v1 hole pose), held-out evaluation
     n_tasks: int = 0
@@ -446,8 +450,11 @@ if __name__ == "__main__":
     agent_inference_p.to_module(agent_inference)
 
     ####### Optimizer #######
+    actor_params = list(agent.actor_mean.parameters()) + [agent.actor_logstd]
+    actor_lr = args.learning_rate if args.actor_lr is None else args.actor_lr
     optimizer = optim.Adam(
-        agent.parameters(),
+        [dict(params=actor_params, lr=torch.tensor(actor_lr, device=device)),
+         dict(params=list(agent.critic.parameters()), lr=torch.tensor(args.learning_rate, device=device))],
         lr=torch.tensor(args.learning_rate, device=device),
         eps=1e-5,
         capturable=args.cudagraphs and not args.compile,
@@ -530,9 +537,11 @@ if __name__ == "__main__":
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
-            lrnow = frac * args.learning_rate
-            optimizer.param_groups[0]["lr"].copy_(lrnow)
+            optimizer.param_groups[0]["lr"].copy_(frac * actor_lr)
+            optimizer.param_groups[1]["lr"].copy_(frac * args.learning_rate)
 
+        if args.critic_warmup_iters > 0 and iteration <= args.critic_warmup_iters + 1:
+            optimizer.param_groups[0]["lr"].copy_(0.0 if iteration <= args.critic_warmup_iters else actor_lr)
         torch.compiler.cudagraph_mark_step_begin()
         rollout_time = time.perf_counter()
         next_obs, next_done, container, final_values = rollout(next_obs, next_done)
