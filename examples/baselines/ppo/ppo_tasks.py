@@ -121,6 +121,8 @@ class Args:
     finite_horizon_gae: bool = False
     critic_warmup_iters: int = 0
     """warm start from --checkpoint: for the first N iterations the actor lr is 0 (only the critic learns), so garbage advantages cannot destroy the pretrained policy"""
+    near_hole_prob: float = 0.0
+    """OmniReset-style reset bias (train envs only): prob. that a reset starts with the peg already in the hole, pulled back 0-10 cm"""
     actor_lr: Optional[float] = None
     """actor learning rate (default: --learning_rate); the critic always uses --learning_rate"""
 
@@ -377,7 +379,7 @@ if __name__ == "__main__":
     else:
         env_kwargs["task_pool"] = pool
     env_kwargs["append_offset"] = False
-    envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, **env_kwargs)
+    envs = gym.make(args.env_id, num_envs=args.num_envs if not args.evaluate else 1, reconfiguration_freq=args.reconfiguration_freq, near_hole_prob=args.near_hole_prob, **env_kwargs)
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, human_render_camera_configs=dict(shader_pack="default"), **env_kwargs)
     set_envs = {}
     for k, g in eval_sets.items():
