@@ -256,9 +256,8 @@ class Trainer:
                 opt.zero_grad(), loss.backward(), nn.utils.clip_grad_norm_(self.actor.parameters(), 1.0), opt.step()
                 losses.append(loss.item())
             # per-episode loss on the latest (on-policy-ish) batch
-            with torch.no_grad():
-                pred, _ = self.actor(r["a"])
-                e = ((pred - r["lab"]) ** 2).mean(-1)
+            with torch.no_grad():  # chunked over envs: one GRU pass over all envs x steps needs ~5 GB (OOM on 16 GB MIG slices)
+                e = torch.cat([((self.actor(r["a"][i:i + 128])[0] - r["lab"][i:i + 128]) ** 2).mean(-1) for i in range(0, len(r["a"]), 128)])
             ev = self.eval()
             m = dict(phase_bc=1, beta=beta, bc_loss=sum(losses[-50:]) / 50, rollout_succ_ep1=r["succ"][:, 0].float().mean().item(),
                      **{f"label_mse_ep{k + 1}": e[:, k * EP_LEN:(k + 1) * EP_LEN].mean().item() for k in range(self.env.n_ep)},
