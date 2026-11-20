@@ -53,6 +53,8 @@ class Args:
     bc_lr: float = 1e-3
     ep1_label: str = "prior"  # prior | true
     init: str = ""  # start from this bc.pt / latest.pt instead of running BC
+    no_bc: bool = False  # skip the imitation warm start: random-init GRU policy, only the obs normalisers are set (from one oracle rollout)
+    near_hole_prob: float = 0.0  # OmniReset-style reset bias, training (stochastic, recorded) rollouts only: prob. an episode starts with the peg pulled back 3-10 cm in the hole
     # PPO
     ppo_iters: int = 300
     value_warmup: int = 10
@@ -177,6 +179,7 @@ class Trainer:
     def run_episode(self, policy="student", beta=0.0, goals=None, seed=None, stochastic=False, ctrl="", record=False, held=False):
         """One meta-episode. policy: student | oracle. beta: per-env prob of the oracle (DAgger mix). Returns dict."""
         seed = self.next_seed() if seed is None else seed
+        self.env.venv.base_env.near_hole_prob = self.args.near_hole_prob if (record and stochastic) else 0.0
         a_obs, c_obs = self.env.reset(seed, goals, self.gen, held=held)
         use_or = torch.rand(self.N, device=self.dev, generator=self.gen) < beta
         h = None
@@ -359,12 +362,15 @@ def main(args):
         elif os.path.exists(rd.ckpt("bc.pt")):
             ck = torch.load(rd.ckpt("bc.pt"), map_location=tr.dev)
             tr.actor.load_state_dict(ck["actor"]), tr.critic.load_state_dict(ck["critic"])
+        elif args.no_bc:
+            r0 = tr.run_episode("oracle", record=True)
+            tr.actor.norm.set(r0["a"]), tr.critic.norm.set(r0["c"])
         else:
             tr.bc(rd)
         with torch.no_grad():
             tr.actor.logstd.fill_(args.init_logstd)
         ref["bc_eval"] = tr.eval()
-        print("BC init eval:", ref["bc_eval"], flush=True)
+        print("init eval (after BC)" if not args.no_bc else "init eval (no BC)", ref["bc_eval"], flush=True)
     tr.ppo(rd, start, opt_state)
     res = dict(ref=ref, final=tr.eval(), controls={c: tr.eval(c) for c in ("shuf", "zero", "hreset")})
     res["succ_matrix"] = tr.run_episode("student", goals=tr.eval_goals, seed=args.eval_seed)["succ"][:512].int().tolist()  # (512 tasks, n_ep)
