@@ -4,7 +4,7 @@
 - Accounts/partitions for this user: `gpu-l40-weirdlab` (partition `gpu-l40`, preferred), `gpu-l40s-weirdlab`, `gpu-a40-weirdlab`,
   then `ckpt-weirdlab`. Per-account limits bite: a pending job reason `AssocGrpGRES`/`AssocGrpCpuLimit` means the account's
   GPU/CPU cap is in use; check `squeue -u $USER` before queueing a batch of sweeps.
-- Tillicum (H200 MIG, no rendering): see the Tillicum section of remote-workflow.md.
+- Tillicum (H200 MIG, no rendering): see docs/claude/info/tillicum.md.
 - Slurm stdout: `logs/slurm/%x-%j.out`. Runs: `logs/runs/<name>/`. Renders/figures: `logs/renders/<topic>/`.
   `logs/` is gitignored. `examples/baselines/ppo/runs` is a symlink to `logs/runs` (ppo.py writes `runs/<exp_name>`).
 - Env: `source /mmfs1/gscratch/weirdlab/will/venvs/maniskill/bin/activate`; set `OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK`.
