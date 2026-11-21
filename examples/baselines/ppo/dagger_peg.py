@@ -36,6 +36,7 @@ class Args:
     batch: int = 16384  # transitions per gradient step
     lr: float = 1e-3
     hidden: int = 256
+    eval_only: bool = False  # just evaluate the expert checkpoint (train pool / held-out holes, shared peg) and exit
 
 
 class Student(nn.Module):
@@ -88,7 +89,11 @@ def main(a):
         return r_tr, r_he
 
     ref_tr, ref_he = evaluate("expert")
-    print(f"expert (peg-expert-r1) train {ref_tr:.3f} held-out {ref_he:.3f}", flush=True)
+    print(f"expert ({a.expert_checkpoint}) train {ref_tr:.3f} held-out {ref_he:.3f}", flush=True)
+    if a.eval_only:
+        rd.save_json("results.json", dict(expert=dict(train=ref_tr, heldout=ref_he)))
+        print("ALLDONE", flush=True)
+        return
     opt = torch.optim.Adam(stu.parameters(), lr=a.lr)
     Xs, Ys, nq = [], [], 0
     for it in range(a.rounds):
