@@ -20,3 +20,18 @@ Tracker experiment `task-count-sweep`. All on Tillicum (H200 MIG, state obs), se
 ## Early observation
 rl2 M=4 after 6 BC iterations: train ep2-8 success ~.94-.96 but held-out ~.02 (memorises the 4 holes even with feedback available).
 Results: TODO.
+
+## Results (seed 1, pulled 2026-11-20)
+Plots: `logs/renders/task-sweep/sweep_train_heldout.png`, `sweep_recurrent_curves.png` (script `scripts/plot_task_sweep.py`).
+PPO runs were OOM-killed at 45.9M/60M steps (curves flat); success = mean of last 3 evals.
+
+| M | PPO train | PPO held-out | RL2 train ep8 | RL2 held ep8 | RL2 held pass@8 |
+|---|---|---|---|---|---|
+| 4 | .98 | .00 | .76 | .02 | .06 |
+| 16 | .85 | .02 | .89 | .20 | .36 |
+| 64 | .91 | .01 | .94 | .75 | .78 |
+| 256 | .72 | .02 | .98 | .97 | .98 |
+
+- Vanilla PPO memorizes at every M (held-out <= 2%). Recurrent PPO generalizes with M: held-out ep8 .02 -> .20 -> .75 -> .97.
+- RL2 M=4 train ep8 degraded .99 (BC) -> .76 during PPO; recurrent runs still at ~PPO iter 90/500.
+- No-BC M=4 run (PPO iter ~160): train ~15% per episode, ep1 = ep8 (not using feedback yet).
