@@ -38,13 +38,12 @@ for ax, t in zip(axs, ["train, episode 8", "held-out, episode 8"]): ax.set(xlabe
 axs[0].set_ylabel("success"); axs[1].legend(frameon=False)
 fig.tight_layout(); fig.savefig(f"{OUT}/sweep_recurrent_curves.png", dpi=160)
 for M in Ms: print(M, {k: round(v, 3) for k, v in P[M][1].items()}, {k: E[M][-1][k] for k in ("it", "eval_succ_ep8", "eval_held_succ_ep8", "eval_pass@8", "eval_held_pass@8")})
-# PPO curves per M (raw evals + moving average) for train and held-out
+# PPO curves per M (raw evals), distinct colors
+cols = {4: BLUE, 16: ORANGE, 64: "#0E7A51", 256: "#892B5D"}
 fig, axs = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
 for M in Ms:
     r = P[M][0]; x = np.array([e["step"] for e in r]) / 1e6
-    for ax, k in zip(axs, ["train", "heldout"]):
-        y = np.array([e[k] for e in r]); ax.plot(x, y, color=sh[M], lw=0.8, alpha=0.4)
-        w = 5; ys = np.convolve(np.pad(y, (w - 1, 0), mode="edge"), np.ones(w) / w, mode="valid"); ax.plot(x, ys, color=sh[M], lw=2.2, label=f"{M} holes")
-for ax, t in zip(axs, ["train", "held-out"]): ax.set(xlabel="environment steps (M)", ylim=(-0.02, 1.03), title=f"PPO (reset bias 25%): {t} (thin = raw eval, thick = 5-eval avg)"); ax.title.set_fontsize(9); ax.grid(alpha=0.2)
+    for ax, k in zip(axs, ["train", "heldout"]): ax.plot(x, [e[k] for e in r], color=cols[M], lw=1.6, label=f"{M} holes")
+for ax, t in zip(axs, ["train", "held-out"]): ax.set(xlabel="environment steps (M)", ylim=(-0.02, 1.03), title=f"PPO (reset bias 25%): {t} success (raw evals)"); ax.grid(alpha=0.2)
 axs[0].set_ylabel("success"); axs[0].legend(frameon=False, loc="lower right")
 fig.tight_layout(); fig.savefig(f"{OUT}/sweep_ppo_curves.png", dpi=160)
