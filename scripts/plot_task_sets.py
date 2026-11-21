@@ -3,13 +3,13 @@ import sys, numpy as np, torch, matplotlib
 matplotlib.use("Agg"); import matplotlib.pyplot as plt
 sys.path.insert(0, "examples/baselines/ppo")
 from icl_tasks import checker_sample, SPLITS
-dev = "cpu"
+dev = "cuda"  # training scripts use cuda generators; cpu generators give different poses
 gp = torch.Generator(device=dev).manual_seed(10_000)            # n_tasks=4, pool_seed=0 (ppo_tasks.py)
 M = int(sys.argv[2]) if len(sys.argv) > 2 else 4
-train = checker_sample(M, "all", dev, gp, "wide_corner").numpy()
+train = checker_sample(M, "all", dev, gp, "wide_corner").cpu().numpy()
 ge = torch.Generator(device=dev).manual_seed(777)               # eval sets share one generator: heldout first, then fullspace
-held = checker_sample(128, "all", dev, ge, "wide_corner").numpy()
-full = checker_sample(256, "all", dev, ge, "wide_corner").numpy()
+held = checker_sample(128, "all", dev, ge, "wide_corner").cpu().numpy()
+full = checker_sample(256, "all", dev, ge, "wide_corner").cpu().numpy()
 sp = SPLITS["wide_corner"]
 BLUE, ORANGE, PINK = "#124690", "#B84A0A", "#E97BA4"
 plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
