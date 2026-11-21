@@ -383,7 +383,7 @@ if __name__ == "__main__":
     eval_envs = gym.make(args.env_id, num_envs=args.num_eval_envs, reconfiguration_freq=args.eval_reconfiguration_freq, human_render_camera_configs=dict(shader_pack="default"), **env_kwargs)
     set_envs = {}
     for k, g in eval_sets.items():
-        e = gym.make(args.env_id, num_envs=len(g), reconfiguration_freq=None, **ekw, **(dict(fixed_tasks=table) if (table is not None and k == "train") else {}))
+        e = gym.make(args.env_id, num_envs=len(g), reconfiguration_freq=None, **ekw, **(dict(fixed_tasks=table) if table is not None else {}))  # all eval sets use the fixed-task table (shared peg); only the hole pose differs (before 2026-11-21 only "train" did: held-out/fullspace used a random peg, a confound)
         if isinstance(e.action_space, gym.spaces.Dict):
             e = FlattenActionSpaceWrapper(e)
         set_envs[k] = ManiSkillVectorEnv(e, len(g), ignore_terminations=True, record_metrics=True)

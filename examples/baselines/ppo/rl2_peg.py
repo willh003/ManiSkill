@@ -217,7 +217,8 @@ class Trainer:
         return out
 
     def eval(self, ctrl=""):
-        r = self.run_episode("student", goals=self.eval_goals, seed=self.args.eval_seed, ctrl=ctrl)
+        # fixed tasks: train eval uses exactly pool[arange % M] rows (held=True bypasses the random row draw) -> identical to dagger_peg.py / PPO eval
+        r = self.run_episode("student", goals=self.eval_goals, seed=self.args.eval_seed, ctrl=ctrl, held=self.args.fixed_tasks > 0)
         s = r["succ"].float()
         d = {}
         for name, ss in (("", s[:512]), ("all_", s)):

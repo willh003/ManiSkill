@@ -81,10 +81,11 @@ def main(a):
     gen = torch.Generator(device=dev).manual_seed(1000 + a.seed)
     ge = torch.Generator(device=dev).manual_seed(12345)
     hg = checker_sample(512, "all", dev, torch.Generator(device=dev).manual_seed(777), "wide_corner").repeat(math.ceil(a.num_envs / 512), 1)[: a.num_envs]
+    tg = env.fixed_pool.to(dev)[torch.arange(512, device=dev) % len(env.fixed_pool)].repeat(math.ceil(a.num_envs / 512), 1)[: a.num_envs]
     seed_ctr = 10 ** 6 * a.seed
 
     def evaluate(policy="student"):
-        r_tr = rollout(env, expert, stu, 0.0, 12345, ge, policy=policy)["succ"][:512].mean().item()
+        r_tr = rollout(env, expert, stu, 0.0, 12345, ge, goals=tg, held=True, policy=policy)["succ"][:512].mean().item()  # exact pool rows, as rl2_peg.py eval()
         r_he = rollout(env, expert, stu, 0.0, 12345, ge, goals=hg, held=True, policy=policy)["succ"][:512].mean().item()
         return r_tr, r_he
 
