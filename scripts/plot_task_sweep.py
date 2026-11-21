@@ -29,11 +29,11 @@ axs[0].set_ylabel("success"); axs[1].legend(frameon=False, fontsize=8.5, loc="ce
 fig.suptitle("Train vs held-out success by number of train holes (seed 1, same tasks)"); fig.tight_layout(); fig.savefig(f"{OUT}/sweep_train_heldout.png", dpi=160)
 # curves for recurrent held-out ep8 over PPO iterations
 fig, axs = plt.subplots(1, 2, figsize=(10, 4))
-sh = {4: "#9db4d6", 16: "#5f84b8", 64: "#2b5a9e", 256: BLUE}
+sh = {4: BLUE, 16: ORANGE, 64: "#0E7A51", 256: "#892B5D"}  # same colors per M as the PPO curves
 for M in Ms:
     x = [e["it"] for e in E[M]]
-    axs[0].plot(x, [e["eval_succ_ep8"] for e in E[M]], color=sh[M], lw=2, label=f"{M} holes")
-    axs[1].plot(x, [e["eval_held_succ_ep8"] for e in E[M]], color=sh[M], lw=2, label=f"{M} holes")
+    axs[0].plot(x, [e["eval_succ_ep8"] for e in E[M]], color=sh[M], lw=1.8, marker="o", ms=3, label=f"{M} holes")
+    axs[1].plot(x, [e["eval_held_succ_ep8"] for e in E[M]], color=sh[M], lw=1.8, marker="o", ms=3, label=f"{M} holes")
 for ax, t in zip(axs, ["train, episode 8", "held-out, episode 8"]): ax.set(xlabel="PPO iteration", ylim=(-0.02, 1.03), title=f"recurrent PPO: {t}"); ax.grid(alpha=0.2)
 axs[0].set_ylabel("success"); axs[1].legend(frameon=False)
 fig.tight_layout(); fig.savefig(f"{OUT}/sweep_recurrent_curves.png", dpi=160)
