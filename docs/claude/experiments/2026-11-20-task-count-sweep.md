@@ -35,3 +35,20 @@ PPO runs were OOM-killed at 45.9M/60M steps (curves flat); success = mean of las
 - Vanilla PPO memorizes at every M (held-out <= 2%). Recurrent PPO generalizes with M: held-out ep8 .02 -> .20 -> .75 -> .97.
 - RL2 M=4 train ep8 degraded .99 (BC) -> .76 during PPO; recurrent runs still at ~PPO iter 90/500.
 - No-BC M=4 run (PPO iter ~160): train ~15% per episode, ep1 = ep8 (not using feedback yet).
+
+## CORRECTION (2026-11-21): PPO held-out numbers above were confounded
+`ppo_tasks.py` builds only the *train* eval set with the fixed-task table (shared peg); the `heldout`/`fullspace` eval envs use the default env
+(random peg size / start pose / robot start). So the ~0.02 PPO held-out numbers changed the peg as well as the hole. Re-evaluating the final
+PPO checkpoints (ckpt_1401, ~45.9M steps) with `dagger_peg.py --eval-only` (MetaPeg shared-peg env, same as the recurrent runs; held-out = 512
+holes, seed 777; jobs evalppo-M*-sharedpeg):
+
+| M | PPO train | PPO held-out (shared peg) | old PPO held-out (confounded) |
+|---|---|---|---|
+| 4 | .998 | .137 | .00 |
+| 16 | .867 | .848 | .02 |
+| 64 | .955 | .910 | .01 |
+| 256 | .816 | .799 | .02 |
+
+So PPO on this setup *does* generalize to new holes from >=16 train holes; the earlier "PPO memorizes, recurrent generalizes" claim was an eval artifact.
+Earlier ppo-4holes warm-start / entropy held-out numbers share the same confound. DAgger controls (dagger-M*-s1, clean hole, expert peg-expert-r1) were
+evaluated with the shared peg and are valid.
