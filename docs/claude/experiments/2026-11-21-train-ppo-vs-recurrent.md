@@ -1,4 +1,4 @@
-# PPO on train holes vs recurrent PPO warm-started from it (2026-11-21, in progress)
+# PPO on train holes vs recurrent PPO warm-started from it (2026-11-21/22, done)
 
 Tracker experiment `train-ppo-vs-recurrent`. 18 runs: PPO x {4, 8 holes} x 3 seeds (`pptr-M{M}-s{s}`), recurrent PPO x {4, 8 holes} x {clean, 4 cm noisy feedback} x 3 seeds
 (`rl2tr-M{M}-{clean|n4cm}-s{s}`).
@@ -15,4 +15,16 @@ Tracker experiment `train-ppo-vs-recurrent`. 18 runs: PPO x {4, 8 holes} x 3 see
   `ppo_tasks.py`'s own heldout/fullspace evals now also use the shared-peg table (before 2026-11-21 they used a random peg, see task-count-sweep correction).
 
 ## Results
-TODO (jobs chained with `--dependency=afterok` on the PPO runs).
+All 24 jobs finished (6 PPO + 1 replacement PPO, 7 evals, 14 recurrent; ~8.5-9.7 h per recurrent run). 4-hole seed 1 PPO never took off (train 0.00), so the seed-1 recurrent runs
+(warm-started from a failed expert: ep8 train 0.59 / 0.23) are shown hollow and excluded; replaced by seed 4 (`pool_seed 4`, different holes/peg; its 4-hole set is not the first 4 of the 8-hole seed-1 set).
+Seeds used: 4 holes {2,3,4}, 8 holes {1,2,3}. Recurrent = episode-8 success. Mean over seeds (train / held-out):
+
+| | PPO | recurrent clean fb | recurrent 4 cm noisy fb |
+|---|---|---|---|
+| 4 holes | 0.81 / 0.09 | 0.98 / 0.08 | 0.92 / 0.03 |
+| 8 holes | 0.81 / 0.45 | 0.91 / 0.35 | 0.91 / 0.07 |
+
+Plots: `logs/renders/seed-sweep/train_ppo_vs_recurrent.png` (axes: method, #holes, feedback; `scripts/plot_train_ppo_vs_recurrent.py`), `ppo_train_vs_heldout.png` (`scripts/plot_ppo_train_heldout.py`).
+- Train: recurrent (clean) >= PPO; seed variance is large (PPO expert quality varies: 0.65-0.99 train; recurrent train inherits it, 4 holes s4 noisy 0.75).
+- Held-out: more holes helps everything; recurrent with clean feedback roughly matches but does not beat its PPO expert (0.35 vs 0.45 at 8 holes); noisy feedback hurts held-out a lot (0.07 at 8 holes).
+  Warm-starting from a PPO-on-train expert (labels only valid near train holes) gives much worse held-out than the full-workspace-expert BC in the task-count sweep.
