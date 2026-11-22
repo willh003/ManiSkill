@@ -23,10 +23,10 @@ for i, M in enumerate([4, 8]):
             a.plot(x + (n - len(pts) / 2) * 0.03, r[k], "o", mfc="white" if (M, s) in failed else c, mec=c, ms=6)
 a.set_xticks([0, 1]); a.set_xticklabels(["4 holes", "8 holes"]); a.set(ylabel="success", ylim=(0, 1.03), title="PPO on train holes, final eval (dots = seeds; hollow = failed run, not in mean)")
 a.title.set_fontsize(9); a.legend(frameon=False, loc="upper right", fontsize=8.5)
-for M, ls in [(4, "-"), (8, "--")]:
-    for k, c in [("train", BLUE), ("heldout", ORANGE)]:
+for M, c in [(4, BLUE), (8, ORANGE)]:  # colour = number of holes, solid = train, dotted = held-out
+    for k, ls in [("train", "-"), ("heldout", ":")]:
         cs = [curve(M, s, k) for s in seeds[M] if (M, s) not in failed]; cs = [x for x in cs if x is not None]
         if not cs: continue
-        n = min(len(x[0]) for x in cs); b.plot(cs[0][0][:n], np.mean([x[1][:n] for x in cs], 0), ls, color=c, lw=2, label=f"{M} holes, {k}")
+        n = min(len(x[0]) for x in cs); b.plot(cs[0][0][:n], np.mean([x[1][:n] for x in cs], 0), ls, color=c, lw=2.2, label=f"{M} holes, {k}")
 b.set(xlabel="env steps (M)", ylabel="success", ylim=(0, 1.03), title="seed-mean training curves"); b.title.set_fontsize(9); b.legend(frameon=False, fontsize=8.5); b.grid(alpha=0.2)
 fig.tight_layout(); os.makedirs(os.path.dirname(sys.argv[1]), exist_ok=True); fig.savefig(sys.argv[1], dpi=150)
